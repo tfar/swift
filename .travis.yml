@@ -1,0 +1,54 @@
+# Enable C++ support
+language: cpp
+
+dist: trusty
+sudo: required
+
+# Compiler selection
+compiler:
+  - gcc
+
+# Cache pip
+cache: 
+  - pip
+  - apt
+
+before_install:
+  - sudo add-apt-repository ppa:beineri/opt-qt551-trusty -y
+  - sudo apt-get -qq update
+
+install:
+  - sudo apt-get install qt55-meta-full
+  - source /opt/qt55/bin/qt55-env.sh
+  - pip3 install coala-bears[alldeps]
+
+# Build steps
+addons:
+  apt:
+    sources:
+      # add PPAs with more up-to-date toolchains
+      - ubuntu-toolchain-r-test
+      #- llvm-toolchain-trusty
+
+    packages:
+      - python3-setuptools python3-pip
+      - build-essential pkg-config libssl-dev libhunspell-dev
+      #- clang-5.0
+      - g++-6
+      - gcc-6
+      - libboost-all-dev
+
+notifications:
+  email: false
+
+script:
+  - coala --non-interactive
+  - scons cc=$MY_CC cxx=$MY_CXX link=$MY_CXX qt=/opt/qt55 test=unit max_jobs=0 allow_warnings=0 -j 2
+
+matrix:
+  include:
+# No clang as Travis CI only has an old stdlib that boost things doesn't have shared_ptr and it's too much effort to update the OS.
+#    - compiler: clang
+#      env: MY_CXX=clang++-5.0 MY_CC=clang-5.0
+    - compiler: gcc
+      env: MY_CXX=g++-6 MY_CC=gcc-6
