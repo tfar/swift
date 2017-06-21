@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -14,7 +14,7 @@
 namespace Swift {
     class MockChatWindow : public ChatWindow {
         public:
-            MockChatWindow() : labelsEnabled_(false), impromptuMUCSupported_(false) {}
+            MockChatWindow() {}
             virtual ~MockChatWindow();
 
             virtual std::string addMessage(const ChatMessage& message, const std::string& senderName, bool senderIsSelf, std::shared_ptr<SecurityLabel> /*label*/, const std::string& /*avatarPath*/, const boost::posix_time::ptime& /*time*/) {
@@ -43,17 +43,21 @@ namespace Swift {
             virtual void addErrorMessage(const ChatMessage& message) {
                 lastAddedErrorMessage_ = message;
             }
-            virtual void replaceMessage(const ChatMessage& /*message*/, const std::string& /*id*/, const boost::posix_time::ptime& /*time*/) {}
+
+            virtual void replaceMessage(const ChatMessage& message, const std::string& /*id*/, const boost::posix_time::ptime& /*time*/) {
+                lastReplacedMessage_ = message;
+            }
+
             virtual void replaceWithAction(const ChatMessage& /*message*/, const std::string& /*id*/, const boost::posix_time::ptime& /*time*/) {}
             virtual void replaceLastMessage(const ChatMessage& message, const TimestampBehaviour /*timestampBehaviour*/) {
-                lastReplacedMessage_ = message;
+                lastReplacedLastMessage_ = message;
             }
             virtual void replaceSystemMessage(const ChatMessage& message, const std::string& /*id*/, const TimestampBehaviour /*timestampBehaviour*/) {
                 lastReplacedSystemMessage_ = message;
             }
 
             // File transfer related stuff
-            virtual std::string addFileTransfer(const std::string& /*senderName*/, bool /*senderIsSelf*/,const std::string& /*filename*/, const boost::uintmax_t /*sizeInBytes*/, const std::string& /*description*/) { return nullptr; }
+            virtual std::string addFileTransfer(const std::string& /*senderName*/, const std::string& /*avatarPath*/, bool /*senderIsSelf*/,const std::string& /*filename*/, const boost::uintmax_t /*sizeInBytes*/, const std::string& /*description*/) { return nullptr; }
             virtual void setFileTransferProgress(std::string /*id*/, const int /*alreadyTransferedBytes*/) { }
             virtual void setFileTransferStatus(std::string /*id*/, const FileTransferState /*state*/, const std::string& /*msg*/) { }
 
@@ -69,7 +73,11 @@ namespace Swift {
             virtual void setAvailableSecurityLabels(const std::vector<SecurityLabelsCatalog::Item>& labels) {labels_ = labels;}
             virtual void setSecurityLabelsEnabled(bool enabled) {labelsEnabled_ = enabled;}
             virtual void setUnreadMessageCount(int /*count*/) {}
-            virtual void convertToMUC(MUCType /*mucType*/) {}
+
+            virtual void convertToMUC(MUCType mucType) {
+                mucType_ = mucType;
+            }
+
             virtual void setSecurityLabelsError() {}
             virtual SecurityLabelsCatalog::Item getSelectedSecurityLabel() {return label_;}
             virtual void setOnline(bool /*online*/) {}
@@ -120,7 +128,7 @@ namespace Swift {
             }
 
             void resetLastMessages() {
-                lastAddedMessage_ = lastAddedAction_ = lastAddedPresence_ = lastReplacedMessage_ = lastAddedSystemMessage_ = lastReplacedSystemMessage_ = ChatMessage();
+                lastAddedMessage_ = lastAddedAction_ = lastAddedPresence_ = lastReplacedLastMessage_ = lastAddedSystemMessage_ = lastReplacedSystemMessage_ = ChatMessage();
                 lastAddedMessageSenderName_ = lastAddedActionSenderName_ = "";
                 lastAddedMessageSenderIsSelf_ = lastAddedActionSenderIsSelf_ = false;
             }
@@ -128,22 +136,24 @@ namespace Swift {
             std::string name_;
             ChatMessage lastAddedMessage_;
             std::string lastAddedMessageSenderName_;
-            bool lastAddedMessageSenderIsSelf_;
+            bool lastAddedMessageSenderIsSelf_ = false;
             ChatMessage lastAddedAction_;
             std::string lastAddedActionSenderName_;
-            bool lastAddedActionSenderIsSelf_;
+            bool lastAddedActionSenderIsSelf_ = false;
             ChatMessage lastAddedPresence_;
             ChatMessage lastReplacedMessage_;
+            ChatMessage lastReplacedLastMessage_;
             ChatMessage lastAddedSystemMessage_;
             ChatMessage lastReplacedSystemMessage_;
-			ChatMessage lastAddedErrorMessage_;
+            ChatMessage lastAddedErrorMessage_;
             JID lastMUCInvitationJID_;
             std::vector<SecurityLabelsCatalog::Item> labels_;
-            bool labelsEnabled_;
-            bool impromptuMUCSupported_;
+            bool labelsEnabled_ = false;
+            bool impromptuMUCSupported_ = false;
             SecurityLabelsCatalog::Item label_;
-            Roster* roster_;
+            Roster* roster_ = nullptr;
             std::vector<std::pair<std::string, ReceiptState>> receiptChanges_;
+            boost::optional<MUCType> mucType_;
     };
 }
 

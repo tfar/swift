@@ -1,10 +1,12 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
 
 #pragma once
+
+#include <vector>
 
 #include <QObject>
 #include <QPointer>
@@ -14,26 +16,26 @@
 class QSplitter;
 
 namespace Swift {
-    class QtSettingsProvider;
-    class SettingsProviderHierachy;
-    class QtChatTabsBase;
+    class AutoUpdater;
     class QtChatTabs;
-    class QtSystemTray;
+    class QtChatTabsBase;
+    class QtChatTheme;
+    class QtChatWindow;
+    class QtChatWindowFactory;
     class QtLoginWindow;
     class QtMainWindow;
-    class QtChatTheme;
-    class QtChatWindowFactory;
-    class QtChatWindow;
-    class TimerFactory;
-    class historyWindow_;
-    class WhiteboardSession;
-    class StatusCache;
+    class QtSettingsProvider;
     class QtSingleWindow;
+    class QtSystemTray;
+    class SettingsProviderHierachy;
+    class StatusCache;
+    class TimerFactory;
+    class WhiteboardSession;
 
     class QtUIFactory : public QObject, public UIFactory {
             Q_OBJECT
         public:
-            QtUIFactory(SettingsProviderHierachy* settings, QtSettingsProvider* qtOnlySettings, QtChatTabsBase* tabs, QtSingleWindow* netbookSplitter, QtSystemTray* systemTray, QtChatWindowFactory* chatWindowFactory, TimerFactory* timerFactory, StatusCache* statusCache, bool startMinimized, bool emoticonsExist, bool enableAdHocCommandOnJID);
+            QtUIFactory(SettingsProviderHierachy* settings, QtSettingsProvider* qtOnlySettings, QtChatTabsBase* tabs, QtSingleWindow* netbookSplitter, QtSystemTray* systemTray, QtChatWindowFactory* chatWindowFactory, TimerFactory* timerFactory, StatusCache* statusCache, AutoUpdater* autoUpdater, bool startMinimized, bool emoticonsExist, bool enableAdHocCommandOnJID);
 
             virtual XMLConsoleWidget* createXMLConsoleWidget();
             virtual HistoryWindow* createHistoryWindow(UIEventStream*);
@@ -73,6 +75,7 @@ namespace Swift {
             QtMainWindow* lastMainWindow;
             QtLoginWindow* loginWindow;
             StatusCache* statusCache;
+            AutoUpdater* autoUpdater;
             std::vector<QPointer<QtChatWindow> > chatWindows;
             bool startMinimized;
             int chatFontSize;

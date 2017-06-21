@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -29,6 +29,7 @@
 #include <SwifTools/Application/PlatformApplicationPathProvider.h>
 #include <SwifTools/AutoUpdater/AutoUpdater.h>
 #include <SwifTools/AutoUpdater/PlatformAutoUpdaterFactory.h>
+#include <SwifTools/EmojiMapper.h>
 
 #include <Swift/Controllers/ApplicationInfo.h>
 #include <Swift/Controllers/BuildVersion.h>
@@ -50,6 +51,8 @@
 #include <Swift/QtUI/QtSwiftUtil.h>
 #include <Swift/QtUI/QtSystemTray.h>
 #include <Swift/QtUI/QtUIFactory.h>
+#include <Swift/QtUI/QtUISettingConstants.h>
+#include <Swift/QtUI/SwiftUpdateFeeds.h>
 
 #if defined(SWIFTEN_PLATFORM_WINDOWS)
 #include <Swift/QtUI/WindowsNotifier.h>
@@ -77,13 +80,11 @@
 #include <Swift/QtUI/QtDBUSURIHandler.h>
 #endif
 
-namespace Swift{
-
 #if defined(SWIFTEN_PLATFORM_MACOSX)
-//#define SWIFT_APPCAST_URL "http://swift.im/appcast/swift-mac-dev.xml"
-#else
-//#define SWIFT_APPCAST_URL ""
+#include <Swift/QtUI/CocoaUIHelpers.h>
 #endif
+
+namespace Swift{
 
 po::options_description QtSwift::getOptionsDescription() {
     po::options_description result("Options");
@@ -133,6 +134,22 @@ void QtSwift::loadEmoticonsFile(const QString& fileName, std::map<std::string, s
                 emoticons[Q2PSTRING(tokens[0])] = Q2PSTRING(emoticonFile);
             }
         }
+    }
+}
+
+const std::string& QtSwift::updateChannelToFeed(const std::string& channel) {
+    static const std::string invalidChannel;
+    if (channel == UpdateFeeds::StableChannel) {
+        return UpdateFeeds::StableAppcastFeed;
+    }
+    else if (channel == UpdateFeeds::TestingChannel) {
+        return UpdateFeeds::TestingAppcastFeed;
+    }
+    else if (channel == UpdateFeeds::DevelopmentChannel) {
+        return UpdateFeeds::DevelopmentAppcastFeed;
+    }
+    else {
+        return invalidChannel;
     }
 }
 
@@ -200,8 +217,6 @@ QtSwift::QtSwift(const po::variables_map& options) : networkFactories_(&clientMa
         assert((error != -1) && "Failed to load font.");
     }
 
-    QApplication::setFont(QFont("Lato"));
-
     bool enableAdHocCommandOnJID = options.count("enable-jid-adhocs") > 0;
     tabs_ = nullptr;
     if (options.count("no-tabs") && !splitter_) {
@@ -254,12 +269,27 @@ QtSwift::QtSwift(const po::variables_map& options) : networkFactories_(&clientMa
         splitter_->show();
     }
 
+    PlatformAutoUpdaterFactory autoUpdaterFactory;
+    if (autoUpdaterFactory.isSupported() && settingsHierachy_->getSetting(QtUISettingConstants::ENABLE_SOFTWARE_UPDATES)
+        && !settingsHierachy_->getSetting(QtUISettingConstants::SOFTWARE_UPDATE_CHANNEL).empty()) {
+        autoUpdater_ = autoUpdaterFactory.createAutoUpdater(updateChannelToFeed(settingsHierachy_->getSetting(QtUISettingConstants::SOFTWARE_UPDATE_CHANNEL)));
+        autoUpdater_->checkForUpdates();
+        autoUpdater_->onUpdateStateChanged.connect(boost::bind(&QtSwift::handleAutoUpdaterStateChanged, this, _1));
+
+        settingsHierachy_->onSettingChanged.connect([&](const std::string& path) {
+            if (path == QtUISettingConstants::SOFTWARE_UPDATE_CHANNEL.getKey()) {
+                autoUpdater_->setAppcastFeed(updateChannelToFeed(settingsHierachy_->getSetting(QtUISettingConstants::SOFTWARE_UPDATE_CHANNEL)));
+                autoUpdater_->checkForUpdates();
+            }
+        });
+    }
+
     for (int i = 0; i < numberOfAccounts; i++) {
         if (i > 0) {
             // Don't add the first tray (see note above)
             systemTrays_.push_back(new QtSystemTray());
         }
-        QtUIFactory* uiFactory = new QtUIFactory(settingsHierachy_, qtSettings_, tabs_, splitter_, systemTrays_[i], chatWindowFactory_, networkFactories_.getTimerFactory(), statusCache_, startMinimized, !emoticons.empty(), enableAdHocCommandOnJID);
+        QtUIFactory* uiFactory = new QtUIFactory(settingsHierachy_, qtSettings_, tabs_, splitter_, systemTrays_[i], chatWindowFactory_, networkFactories_.getTimerFactory(), statusCache_, autoUpdater_, startMinimized, !emoticons.empty(), enableAdHocCommandOnJID);
         uiFactories_.push_back(uiFactory);
         MainController* mainController = new MainController(
                 &clientMainThreadCaller_,
@@ -279,12 +309,7 @@ QtSwift::QtSwift(const po::variables_map& options) : networkFactories_(&clientMa
         mainControllers_.push_back(mainController);
     }
 
-
-    // PlatformAutoUpdaterFactory autoUpdaterFactory;
-    // if (autoUpdaterFactory.isSupported()) {
-    //     autoUpdater_ = autoUpdaterFactory.createAutoUpdater(SWIFT_APPCAST_URL);
-    //     autoUpdater_->checkForUpdates();
-    // }
+    connect(qApp, SIGNAL(aboutToQuit()), this, SLOT(handleAboutToQuit()));
 }
 
 QtSwift::~QtSwift() {
@@ -300,6 +325,7 @@ QtSwift::~QtSwift() {
         delete tray;
     }
     delete tabs_;
+    delete chatWindowFactory_;
     delete splitter_;
     delete settingsHierachy_;
     delete qtSettings_;
@@ -308,10 +334,34 @@ QtSwift::~QtSwift() {
     delete uriHandler_;
     delete dock_;
     delete soundPlayer_;
-    delete chatWindowFactory_;
     delete certificateStorageFactory_;
     delete storagesFactory_;
     delete applicationPathProvider_;
+}
+
+void QtSwift::handleAboutToQuit() {
+#if defined(SWIFTEN_PLATFORM_MACOSX)
+    // This is required so Sparkle knows about the application shutting down
+    // and can update the application in background.
+     CocoaUIHelpers::sendCocoaApplicationWillTerminateNotification();
+#endif
+}
+
+void QtSwift::handleAutoUpdaterStateChanged(AutoUpdater::State updatedState) {
+    switch (updatedState) {
+    case AutoUpdater::State::NotCheckedForUpdatesYet:
+        break;
+    case AutoUpdater::State::CheckingForUpdate:
+        break;
+    case AutoUpdater::State::DownloadingUpdate:
+        break;
+    case AutoUpdater::State::ErrorCheckingForUpdate:
+        break;
+    case AutoUpdater::State::NoUpdateAvailable:
+        break;
+    case AutoUpdater::State::RestartToInstallUpdate:
+        notifier_->showMessage(Notifier::SystemMessage, Q2PSTRING(tr("Swift Update Available")), Q2PSTRING(tr("Restart Swift to update to the new Swift version.")), "", [](){});
+    }
 }
 
 }

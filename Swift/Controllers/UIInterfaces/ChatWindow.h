@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -22,7 +22,7 @@
 #include <Swiften/Elements/SecurityLabelsCatalog.h>
 #include <Swiften/MUC/MUCBookmark.h>
 
-#include <Swift/Controllers/HighlightManager.h>
+#include <Swift/Controllers/Highlighting/HighlightManager.h>
 
 namespace Swift {
     class AvatarManager;
@@ -62,12 +62,36 @@ namespace Swift {
                         parts_ = parts;
                     }
 
-                    void setFullMessageHighlightAction(const HighlightAction& action) {
-                        fullMessageHighlightAction_ = action;
+                    void setHighlightActionSender(const HighlightAction& action) {
+                        highlightActionSender_ = action;
                     }
 
-                    const HighlightAction& getFullMessageHighlightAction() const {
-                        return fullMessageHighlightAction_;
+                    const HighlightAction& getHighlightActionSender() const {
+                        return highlightActionSender_;
+                    }
+
+                    void setHighlightActionOwnMention(const HighlightAction& action) {
+                        highlightActionOwnMention_ = action;
+                    }
+
+                    const HighlightAction& getHighlightActionOwnMention() const {
+                        return highlightActionOwnMention_;
+                    }
+
+                    void setHighlightActionGroupMessage(const HighlightAction& action) {
+                        highlightActionGroupMessage_ = action;
+                    }
+
+                    const HighlightAction& getHighlightActionGroupMessage() const {
+                        return highlightActionGroupMessage_;
+                    }
+
+                    void setHighlightActonDirectMessage(const HighlightAction& action) {
+                        highlightActionDirectMessage_ = action;
+                    }
+
+                    const HighlightAction& getHighlightActionDirectMessage() const {
+                        return highlightActionDirectMessage_;
                     }
 
                     bool isMeCommand() const {
@@ -80,7 +104,10 @@ namespace Swift {
 
                 private:
                     std::vector<std::shared_ptr<ChatMessagePart> > parts_;
-                    HighlightAction fullMessageHighlightAction_;
+                    HighlightAction highlightActionSender_;
+                    HighlightAction highlightActionOwnMention_;
+                    HighlightAction highlightActionGroupMessage_;
+                    HighlightAction highlightActionDirectMessage_;
                     bool isMeCommand_ = false;
             };
 
@@ -153,7 +180,7 @@ namespace Swift {
             virtual void replaceWithAction(const ChatMessage& message, const std::string& id, const boost::posix_time::ptime& time) = 0;
 
             // File transfer related stuff
-            virtual std::string addFileTransfer(const std::string& senderName, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description) = 0;
+            virtual std::string addFileTransfer(const std::string& senderName, const std::string& avatarPath, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description) = 0;
             virtual void setFileTransferProgress(std::string, const int percentageDone) = 0;
             virtual void setFileTransferStatus(std::string, const FileTransferState state, const std::string& msg = "") = 0;
             virtual void addMUCInvitation(const std::string& senderName, const JID& jid, const std::string& reason, const std::string& password, bool direct = true, bool isImpromptu = false, bool isContinuation = false) = 0;
@@ -199,7 +226,6 @@ namespace Swift {
             /**
              * Set an alert on the window.
              * @param alertText Description of alert (required).
-             * @param buttonText Button text to use (optional, no button is shown if empty).
              * @return A handle to the alert message.
              */
             virtual AlertID addAlert(const std::string& alertText) = 0;
@@ -238,7 +264,7 @@ namespace Swift {
             boost::signals2::signal<void ()> onGetAffiliationsRequest;
             boost::signals2::signal<void (MUCOccupant::Affiliation, const JID&)> onSetAffiliationRequest;
             boost::signals2::signal<void (const std::vector<std::pair<MUCOccupant::Affiliation, JID> >& changes)> onChangeAffiliationsRequest;
-            boost::signals2::signal<void ()> onLogCleared;
+            boost::signals2::signal<void ()> onContinuationsBroken;
 
             // File transfer related
             boost::signals2::signal<void (std::string /* id */)> onFileTransferCancel;

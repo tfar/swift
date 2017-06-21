@@ -6,7 +6,6 @@
 
 #include <Swiften/Serializer/PayloadSerializers/FullPayloadSerializerCollection.h>
 
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Elements/BlockListPayload.h>
 #include <Swiften/Elements/BlockPayload.h>
 #include <Swiften/Elements/UnblockPayload.h>
@@ -21,6 +20,7 @@
 #include <Swiften/Serializer/PayloadSerializers/CarbonsReceivedSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/CarbonsSentSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/ChatStateSerializer.h>
+#include <Swiften/Serializer/PayloadSerializers/ClientStateSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/CommandSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/DelaySerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/DeliveryReceiptRequestSerializer.h>
@@ -45,6 +45,7 @@
 #include <Swiften/Serializer/PayloadSerializers/MAMFinSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/MAMQuerySerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/MAMResultSerializer.h>
+#include <Swiften/Serializer/PayloadSerializers/MIXParticipantSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/MUCAdminPayloadSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/MUCDestroyPayloadSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/MUCInvitationPayloadSerializer.h>
@@ -91,6 +92,7 @@ FullPayloadSerializerCollection::FullPayloadSerializerCollection() {
     serializers_.push_back(new SubjectSerializer());
     serializers_.push_back(new ThreadSerializer());
     serializers_.push_back(new ChatStateSerializer());
+    serializers_.push_back(new ClientStateSerializer());
     serializers_.push_back(new PrioritySerializer());
     serializers_.push_back(new ErrorSerializer(this));
     serializers_.push_back(new RosterSerializer());
@@ -153,6 +155,7 @@ FullPayloadSerializerCollection::FullPayloadSerializerCollection() {
 
     serializers_.push_back(new ResultSetSerializer());
     serializers_.push_back(new ForwardedSerializer(this));
+    serializers_.push_back(new MIXParticipantSerializer());
     serializers_.push_back(new MAMResultSerializer(this));
     serializers_.push_back(new MAMQuerySerializer());
     serializers_.push_back(new MAMFinSerializer());
@@ -165,13 +168,13 @@ FullPayloadSerializerCollection::FullPayloadSerializerCollection() {
 
     serializers_.push_back(new IsodeIQDelegationSerializer(this));
 
-    foreach(PayloadSerializer* serializer, serializers_) {
+    for (auto serializer : serializers_) {
         addSerializer(serializer);
     }
 }
 
 FullPayloadSerializerCollection::~FullPayloadSerializerCollection() {
-    foreach(PayloadSerializer* serializer, serializers_) {
+    for (auto serializer : serializers_) {
         removeSerializer(serializer);
         delete serializer;
     }

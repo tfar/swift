@@ -6,7 +6,6 @@
 
 #include <Swiften/Parser/PayloadParsers/FullPayloadParserFactoryCollection.h>
 
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Elements/BlockListPayload.h>
 #include <Swiften/Elements/BlockPayload.h>
 #include <Swiften/Elements/UnblockPayload.h>
@@ -24,6 +23,7 @@
 #include <Swiften/Parser/PayloadParsers/CarbonsReceivedParser.h>
 #include <Swiften/Parser/PayloadParsers/CarbonsSentParser.h>
 #include <Swiften/Parser/PayloadParsers/ChatStateParserFactory.h>
+#include <Swiften/Parser/PayloadParsers/ClientStateParserFactory.h>
 #include <Swiften/Parser/PayloadParsers/CommandParser.h>
 #include <Swiften/Parser/PayloadParsers/DelayParser.h>
 #include <Swiften/Parser/PayloadParsers/DeliveryReceiptParserFactory.h>
@@ -51,6 +51,7 @@
 #include <Swiften/Parser/PayloadParsers/MAMFinParser.h>
 #include <Swiften/Parser/PayloadParsers/MAMQueryParser.h>
 #include <Swiften/Parser/PayloadParsers/MAMResultParser.h>
+#include <Swiften/Parser/PayloadParsers/MIXParticipantParserFactory.h>
 #include <Swiften/Parser/PayloadParsers/MUCAdminPayloadParser.h>
 #include <Swiften/Parser/PayloadParsers/MUCDestroyPayloadParser.h>
 #include <Swiften/Parser/PayloadParsers/MUCInvitationPayloadParser.h>
@@ -128,6 +129,8 @@ FullPayloadParserFactoryCollection::FullPayloadParserFactoryCollection() {
     factories_.push_back(std::make_shared<GenericPayloadParserFactory<VCardParser> >("vCard", "vcard-temp"));
     factories_.push_back(std::make_shared<PrivateStorageParserFactory>(this));
     factories_.push_back(std::make_shared<ChatStateParserFactory>());
+    factories_.push_back(std::make_shared<ClientStateParserFactory>());
+    factories_.push_back(std::make_shared<MIXParticipantParserFactory>());
     factories_.push_back(std::make_shared<MUCUserPayloadParserFactory>(this));
     factories_.push_back(std::make_shared<MUCOwnerPayloadParserFactory>(this));
     factories_.push_back(std::make_shared<GenericPayloadParserFactory<MUCInvitationPayloadParser> >("x", "jabber:x:conference"));
@@ -167,7 +170,7 @@ FullPayloadParserFactoryCollection::FullPayloadParserFactoryCollection() {
     factories_.push_back(std::make_shared<GenericPayloadParserFactory2<CarbonsSentParser> >("sent", "urn:xmpp:carbons:2", this));
     factories_.push_back(std::make_shared<GenericPayloadParserFactory<CarbonsPrivateParser> >("private", "urn:xmpp:carbons:2"));
 
-    foreach(std::shared_ptr<PayloadParserFactory> factory, factories_) {
+    for (auto& factory : factories_) {
         addFactory(factory.get());
     }
     defaultFactory_ = new RawXMLPayloadParserFactory();
@@ -177,7 +180,7 @@ FullPayloadParserFactoryCollection::FullPayloadParserFactoryCollection() {
 FullPayloadParserFactoryCollection::~FullPayloadParserFactoryCollection() {
     setDefaultFactory(nullptr);
     delete defaultFactory_;
-    foreach(std::shared_ptr<PayloadParserFactory> factory, factories_) {
+    for (auto& factory : factories_) {
         removeFactory(factory.get());
     }
 }

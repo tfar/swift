@@ -17,7 +17,6 @@
 #include <boost/signals2.hpp>
 
 #include <Swiften/Elements/MUCOccupant.h>
-#include <Swiften/Elements/Presence.h>
 #include <Swiften/Elements/StatusShow.h>
 #include <Swiften/Elements/VCard.h>
 #include <Swiften/JID/JID.h>
@@ -27,6 +26,8 @@
 namespace Swift {
 
 class GroupRosterItem;
+class Presence;
+
 class ContactRosterItem : public RosterItem {
     public:
         enum Feature {
@@ -42,6 +43,14 @@ class ContactRosterItem : public RosterItem {
         };
 
     public:
+        /**
+        * @brief ContactRosterItem contains the information of a contact that is part of a XMPP Roster.
+        * @param jid The JabberID of the contact in the Roster entry.
+        * @param displayJID An alternate JID that is used instead of the JID this item represents. If not available,
+        * an empty node should be passed. This parameter will be converted to a bare JID.
+        * @param name The name or nickname of the contact
+        * @param parent The roster group that the contact is a member of. The same JID may be in several roster groups, in which case they will have individual ContactRosterItems with the same JID.
+        */
         ContactRosterItem(const JID& jid, const JID& displayJID, const std::string& name, GroupRosterItem* parent);
         virtual ~ContactRosterItem();
 
@@ -49,7 +58,9 @@ class ContactRosterItem : public RosterItem {
         StatusShow::Type getSimplifiedStatusShow() const;
         std::string getStatusText() const;
         std::string getIdleText() const;
+        boost::posix_time::ptime getIdle() const;
         std::string getOfflineSinceText() const;
+        boost::posix_time::ptime getOfflineSince() const;
         void setAvatarPath(const boost::filesystem::path& path);
         const boost::filesystem::path& getAvatarPath() const;
         const JID& getJID() const;
@@ -82,7 +93,6 @@ class ContactRosterItem : public RosterItem {
     private:
         JID jid_;
         JID displayJID_;
-        boost::posix_time::ptime lastAvailableTime_;
         boost::filesystem::path avatarPath_;
         std::shared_ptr<Presence> presence_;
         std::vector<std::string> groups_;

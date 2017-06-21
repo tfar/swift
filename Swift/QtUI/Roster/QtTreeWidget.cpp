@@ -10,6 +10,7 @@
 
 #include <boost/bind.hpp>
 
+#include <QFont>
 #include <QLabel>
 #include <QMimeData>
 #include <QObject>
@@ -32,9 +33,7 @@
 
 namespace Swift {
 
-QtTreeWidget::QtTreeWidget(UIEventStream* eventStream, SettingsProvider* settings, MessageTarget messageTarget, QWidget* parent) : QTreeView(parent), tooltipShown_(false), messageTarget_(messageTarget) {
-    eventStream_ = eventStream;
-    settings_ = settings;
+QtTreeWidget::QtTreeWidget(UIEventStream* eventStream, SettingsProvider* settings, MessageTarget messageTarget, QWidget* parent) : QTreeView(parent),  eventStream_(eventStream), settings_(settings), messageTarget_(messageTarget) {
     model_ = new RosterModel(this, settings_->getSetting(QtUISettingConstants::USE_SCREENREADER));
     setModel(model_);
     delegate_ = new RosterDelegate(this, settings_->getSetting(QtUISettingConstants::COMPACT_ROSTER));
@@ -59,6 +58,10 @@ QtTreeWidget::QtTreeWidget(UIEventStream* eventStream, SettingsProvider* setting
     connect(this, SIGNAL(clicked(const QModelIndex&)), this, SLOT(handleClicked(const QModelIndex&)));
 
     settings_->onSettingChanged.connect(boost::bind(&QtTreeWidget::handleSettingChanged, this, _1));
+
+    QFont lato = font();
+    lato.setFamily("Lato");
+    setFont(lato);
 }
 
 QtTreeWidget::~QtTreeWidget() {
@@ -237,7 +240,6 @@ JID QtTreeWidget::jidFromIndex(const QModelIndex& index) const {
     JID target;
     if (messageTarget_ == MessageDisplayJID) {
         target = JID(Q2PSTRING(index.data(DisplayJIDRole).toString()));
-        target = target.toBare();
     }
     if (!target.isValid()) {
         target = JID(Q2PSTRING(index.data(JIDRole).toString()));

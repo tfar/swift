@@ -12,8 +12,6 @@
 
 #include <lua.hpp>
 
-#include <Swiften/Base/foreach.h>
-
 #include <Sluift/Lua/Check.h>
 #include <Sluift/Lua/Value.h>
 #include <Sluift/LuaElementConvertors.h>
@@ -91,7 +89,6 @@ std::shared_ptr<Command> CommandConvertor::doConvertFromLua(lua_State* L) {
     lua_getfield(L, -1, "available_actions");
     if (!lua_isnil(L, -1)) {
         Lua::checkType(L, -1, LUA_TTABLE);
-        lua_pushnil(L);
         for (lua_pushnil(L); lua_next(L, -2) != 0; ) {
             result->addAvailableAction(convertActionFromString(Lua::checkString(L, -1)));
             lua_pop(L, 1);
@@ -102,7 +99,6 @@ std::shared_ptr<Command> CommandConvertor::doConvertFromLua(lua_State* L) {
     lua_getfield(L, -1, "notes");
     if (!lua_isnil(L, -1)) {
         Lua::checkType(L, -1, LUA_TTABLE);
-        lua_pushnil(L);
         for (lua_pushnil(L); lua_next(L, -2) != 0; ) {
             Lua::checkType(L, -1, LUA_TTABLE);
             std::string note;
@@ -156,7 +152,7 @@ void CommandConvertor::doConvertToLua(lua_State* L, std::shared_ptr<Command> pay
 
     if (!payload->getNotes().empty()) {
         std::vector<Lua::Value> notes;
-        foreach (const Command::Note& note, payload->getNotes()) {
+        for (const auto& note : payload->getNotes()) {
             Lua::Table noteTable;
             if (!note.note.empty()) {
                 noteTable["note"] = Lua::valueRef(note.note);
@@ -181,7 +177,7 @@ void CommandConvertor::doConvertToLua(lua_State* L, std::shared_ptr<Command> pay
 
     if (!payload->getAvailableActions().empty()) {
         std::vector<Lua::Value> availableActions;
-        foreach (const Command::Action& action, payload->getAvailableActions()) {
+        for (const auto& action : payload->getAvailableActions()) {
             if (action != Command::NoAction) {
                 availableActions.push_back(convertActionToString(action));
             }

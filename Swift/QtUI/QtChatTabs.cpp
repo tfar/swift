@@ -19,16 +19,16 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QtGlobal>
+#include <QWindow>
 
 #include <Swiften/Base/Log.h>
 
 #include <Swift/Controllers/ChatMessageSummarizer.h>
-#include <Swift/Controllers/SettingConstants.h>
-#include <Swift/Controllers/Settings/SettingsProvider.h>
 
 #include <Swift/QtUI/QtSwiftUtil.h>
 #include <Swift/QtUI/QtTabWidget.h>
 #include <Swift/QtUI/QtTabbable.h>
+#include <Swift/QtUI/QtUISettingConstants.h>
 #include <Swift/QtUI/Trellis/QtDynamicGridLayout.h>
 #include <Swift/QtUI/Trellis/QtGridSelectionDialog.h>
 
@@ -51,7 +51,7 @@ QtChatTabs::QtChatTabs(bool singleWindow, SettingsProvider* settingsProvider, bo
 
     if (trellisMode) {
         // restore size
-        std::string gridSizeString = settingsProvider->getSetting(SettingConstants::TRELLIS_GRID_SIZE);
+        std::string gridSizeString = settingsProvider->getSetting(QtUISettingConstants::TRELLIS_GRID_SIZE);
         if (!gridSizeString.empty()) {
             QByteArray gridSizeData = QByteArray::fromBase64(P2QSTRING(gridSizeString).toUtf8());
             QDataStream dataStreamGridSize(&gridSizeData, QIODevice::ReadWrite);
@@ -61,7 +61,7 @@ QtChatTabs::QtChatTabs(bool singleWindow, SettingsProvider* settingsProvider, bo
         }
 
         // restore positions
-        std::string tabPositionsString = settingsProvider->getSetting(SettingConstants::TRELLIS_GRID_POSITIONS);
+        std::string tabPositionsString = settingsProvider->getSetting(QtUISettingConstants::TRELLIS_GRID_POSITIONS);
         if (!tabPositionsString.empty()) {
             QByteArray tabPositionsData = QByteArray::fromBase64(P2QSTRING(tabPositionsString).toUtf8());
             QDataStream inTabPositions(&tabPositionsData, QIODevice::ReadWrite);
@@ -81,7 +81,7 @@ QtChatTabs::QtChatTabs(bool singleWindow, SettingsProvider* settingsProvider, bo
 }
 
 QtChatTabs::~QtChatTabs() {
-    foreach (QShortcut* shortcut, shortcuts_) {
+    for (auto shortcut : shortcuts_) {
         delete shortcut;
     }
 
@@ -373,9 +373,16 @@ void QtChatTabs::flash() {
 void QtChatTabs::handleOpenLayoutChangeDialog() {
     disconnect(gridSelectionDialog_, SIGNAL(currentGridSizeChanged(QSize)), dynamicGrid_, SLOT(setDimensions(QSize)));
     gridSelectionDialog_->setCurrentGridSize(dynamicGrid_->getDimension());
-    gridSelectionDialog_->move(QCursor::pos());
+
+    int screen = QApplication::desktop()->screenNumber(QCursor::pos());
+    QPoint center = QApplication::desktop()->screenGeometry(screen).center();
+    gridSelectionDialog_->move(center);
+
     connect(gridSelectionDialog_, SIGNAL(currentGridSizeChanged(QSize)), dynamicGrid_, SLOT(setDimensions(QSize)));
     gridSelectionDialog_->show();
+
+    QPoint pos(gridSelectionDialog_->getFrameSize().width() / 2, gridSelectionDialog_->getFrameSize().height() / 2);
+    QCursor::setPos(gridSelectionDialog_->windowHandle()->screen(), gridSelectionDialog_->mapToGlobal(QPoint(gridSelectionDialog_->width(), (gridSelectionDialog_->height() - gridSelectionDialog_->getDescriptionTextHeight())) - pos));
 }
 
 void QtChatTabs::storeTabPositions() {
@@ -383,14 +390,14 @@ void QtChatTabs::storeTabPositions() {
     QByteArray gridSizeData;
     QDataStream dataStreamGridSize(&gridSizeData, QIODevice::ReadWrite);
     dataStreamGridSize << dynamicGrid_->getDimension();
-    settingsProvider_->storeSetting(SettingConstants::TRELLIS_GRID_SIZE, Q2PSTRING(QString(gridSizeData.toBase64())));
+    settingsProvider_->storeSetting(QtUISettingConstants::TRELLIS_GRID_SIZE, Q2PSTRING(QString(gridSizeData.toBase64())));
 
     // save positions
     QByteArray tabPositionsData;
     QDataStream dataStreamTabPositions(&tabPositionsData, QIODevice::ReadWrite);
     dynamicGrid_->updateTabPositions();
     dataStreamTabPositions << dynamicGrid_->getTabPositions();
-    settingsProvider_->storeSetting(SettingConstants::TRELLIS_GRID_POSITIONS, Q2PSTRING(QString(tabPositionsData.toBase64())));
+    settingsProvider_->storeSetting(QtUISettingConstants::TRELLIS_GRID_POSITIONS, Q2PSTRING(QString(tabPositionsData.toBase64())));
 }
 
 void QtChatTabs::resizeEvent(QResizeEvent*) {

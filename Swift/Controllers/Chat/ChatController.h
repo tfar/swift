@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -19,18 +19,19 @@ namespace Swift {
     class AvatarManager;
     class ChatStateNotifier;
     class ChatStateTracker;
-    class NickResolver;
+    class ClientBlockListManager;
     class EntityCapsProvider;
     class FileTransferController;
-    class SettingsProvider;
-    class HistoryController;
     class HighlightManager;
-    class ClientBlockListManager;
+    class HistoryController;
+    class NickResolver;
+    class SettingsProvider;
+    class TimerFactory;
     class UIEvent;
 
     class ChatController : public ChatControllerBase {
         public:
-            ChatController(const JID& self, StanzaChannel* stanzaChannel, IQRouter* iqRouter, ChatWindowFactory* chatWindowFactory, const JID &contact, NickResolver* nickResolver, PresenceOracle* presenceOracle, AvatarManager* avatarManager, bool isInMUC, bool useDelayForLatency, UIEventStream* eventStream, EventController* eventController, TimerFactory* timerFactory, EntityCapsProvider* entityCapsProvider, bool userWantsReceipts, SettingsProvider* settings, HistoryController* historyController, MUCRegistry* mucRegistry, HighlightManager* highlightManager, ClientBlockListManager* clientBlockListManager, std::shared_ptr<ChatMessageParser> chatMessageParser, AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider);
+            ChatController(const JID& self, StanzaChannel* stanzaChannel, IQRouter* iqRouter, ChatWindowFactory* chatWindowFactory, const JID &contact, NickResolver* nickResolver, PresenceOracle* presenceOracle, AvatarManager* avatarManager, bool isInMUC, bool useDelayForLatency, UIEventStream* eventStream, TimerFactory* timerFactory, EventController* eventController, EntityCapsProvider* entityCapsProvider, bool userWantsReceipts, SettingsProvider* settings, HistoryController* historyController, MUCRegistry* mucRegistry, HighlightManager* highlightManager, ClientBlockListManager* clientBlockListManager, std::shared_ptr<ChatMessageParser> chatMessageParser, AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider);
             virtual ~ChatController();
             virtual void setToJID(const JID& jid) SWIFTEN_OVERRIDE;
             virtual void setAvailableServerFeatures(std::shared_ptr<DiscoInfo> info) SWIFTEN_OVERRIDE;
@@ -46,6 +47,8 @@ namespace Swift {
             virtual void cancelReplaces() SWIFTEN_OVERRIDE;
             virtual JID getBaseJID() SWIFTEN_OVERRIDE;
             virtual void logMessage(const std::string& message, const JID& fromJID, const JID& toJID, const boost::posix_time::ptime& timeStamp, bool isIncoming) SWIFTEN_OVERRIDE;
+            virtual bool shouldIgnoreMessage(std::shared_ptr<Message> message) SWIFTEN_OVERRIDE;
+            virtual JID messageCorrectionJID(const JID& fromJID) SWIFTEN_OVERRIDE;
 
         private:
             void handlePresenceChange(std::shared_ptr<Presence> newPresence);
@@ -53,6 +56,8 @@ namespace Swift {
             virtual bool isIncomingMessageFromMe(std::shared_ptr<Message> message) SWIFTEN_OVERRIDE;
             virtual void postSendMessage(const std::string &body, std::shared_ptr<Stanza> sentStanza) SWIFTEN_OVERRIDE;
             virtual void preHandleIncomingMessage(std::shared_ptr<MessageEvent> messageEvent) SWIFTEN_OVERRIDE;
+            virtual void addMessageHandleIncomingMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& timeStamp) SWIFTEN_OVERRIDE;
+            virtual void handleIncomingReplaceMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, const std::string& idToReplace, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& timeStamp) SWIFTEN_OVERRIDE;
             virtual void postHandleIncomingMessage(std::shared_ptr<MessageEvent> messageEvent, const ChatWindow::ChatMessage& chatMessage) SWIFTEN_OVERRIDE;
             virtual void preSendMessageRequest(std::shared_ptr<Message>) SWIFTEN_OVERRIDE;
             virtual std::string senderHighlightNameFromMessage(const JID& from) SWIFTEN_OVERRIDE;
@@ -95,14 +100,14 @@ namespace Swift {
             std::map<std::shared_ptr<Stanza>, std::string> unackedStanzas_;
             std::map<std::string, std::string> requestedReceipts_;
             StatusShow::Type lastShownStatus_;
-            UIEventStream* eventStream_;
 
             Tristate contactSupportsReceipts_;
-            bool receivingPresenceFromUs_;
+            bool receivingPresenceFromUs_ = false;
             bool userWantsReceipts_;
             std::map<std::string, FileTransferController*> ftControllers;
             SettingsProvider* settings_;
             std::string lastWbID_;
+            std::string lastHandledMessageID_;
 
             ClientBlockListManager* clientBlockListManager_;
             boost::signals2::scoped_connection blockingOnStateChangedConnection_;

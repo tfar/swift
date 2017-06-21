@@ -52,6 +52,7 @@ vars.Add(BoolVariable("hunspell_enable", "Build with Hunspell support", True))
 vars.Add(PathVariable("boost_includedir", "Boost headers location", None, PathVariable.PathAccept))
 vars.Add(PathVariable("boost_libdir", "Boost library location", None, PathVariable.PathAccept))
 vars.Add(BoolVariable("boost_bundled_enable", "Allow use of bundled Boost as last resort", "true"))
+vars.Add(BoolVariable("boost_force_bundled", "Force use of bundled Boost.", False))
 vars.Add(PathVariable("zlib_includedir", "Zlib headers location", None, PathVariable.PathAccept))
 vars.Add(PathVariable("zlib_libdir", "Zlib library location", None, PathVariable.PathAccept))
 vars.Add(PathVariable("zlib_libfile", "Zlib library file (full path to file)", None, PathVariable.PathAccept))
@@ -69,12 +70,17 @@ vars.Add(PathVariable("libidn_includedir", "LibIDN headers location", None, Path
 vars.Add(PathVariable("libidn_libdir", "LibIDN library location", None, PathVariable.PathAccept))
 vars.Add("libidn_libname", "LibIDN library name",  os.name == "nt" and "libidn" or "idn")
 vars.Add(BoolVariable("need_idn", "Whether an IDN library is required. Without this, most internal binaries will fail", "true"))
+
 vars.Add(PathVariable("libminiupnpc_includedir", "LibMiniUPNPC headers location", None, PathVariable.PathAccept))
 vars.Add(PathVariable("libminiupnpc_libdir", "LibMiniUPNPC library location", None, PathVariable.PathAccept))
 vars.Add("libminiupnpc_libname", "LibMiniUPNPC library name", os.name == "nt" and "libminiupnpc" or "miniupnpc")
+vars.Add(BoolVariable("libminiupnpc_force_bundled", "Force use of bundled LibMiniUPNPC", False))
+
 vars.Add(PathVariable("libnatpmp_includedir", "LibNATPMP headers location", None, PathVariable.PathAccept))
 vars.Add(PathVariable("libnatpmp_libdir", "LibNATPMP library location", None, PathVariable.PathAccept))
 vars.Add("libnatpmp_libname", "LibNATPMP library name", os.name == "nt" and "libnatpmp" or "natpmp")
+vars.Add(BoolVariable("libnatpmp_force_bundled", "Force use of bundled LibNATPMP", False))
+
 vars.Add(PathVariable("sqlite_includedir", "SQLite headers location", None, PathVariable.PathAccept))
 vars.Add(PathVariable("sqlite_libdir", "SQLite library location", None, PathVariable.PathAccept))
 vars.Add("sqlite_libname", "SQLite library name", os.name == "nt" and "libsqlite3" or "sqlite3")
@@ -104,7 +110,15 @@ vars.Add(BoolVariable("unbound", "Build bundled ldns and unbound. Use them for D
 vars.Add(BoolVariable("check_headers", "Independently build compilation units for all Swiften headers for detecting missing dependencies.", "no"))
 vars.Add("win_target_arch", "Target architecture for Windows builds. x86 for 32-bit (default) or x86_64 for 64-bit.", "x86")
 vars.Add(BoolVariable("install_git_hooks", "Install git hooks", "true"))
+
+# Code Signing Options
 vars.Add("codesign_identity", "macOS code signing identity to be passed to codesign when building the distribution package. Must match the Commen Name of the Subject of the code signing certificate.", "")
+vars.Add("signtool_key_pfx", "The keyfile (.pfx) that will be used to sign the Windows installer.", None)
+vars.Add("signtool_timestamp_url", "The timestamp server that will be queried for a signed time stamp in the signing process.", None)
+
+# Automatic Software Update Options
+vars.Add(PathVariable("sparkle_public_dsa_key", "Optional path to a public DSA key used to verify Sparkle software updates. Without specifiying this option, the app needs to be code signed for Sparkle to work.", None, PathVariable.PathIsFile))
+
 
 ################################################################################
 # Set up default build & configure environment
@@ -122,6 +136,11 @@ if "MSVC_VERSION" in ARGUMENTS :
 else :
     env = Environment(ENV = env_ENV, variables = vars, platform = ARGUMENTS.get("PLATFORM", None))
     env = Environment(ENV = env_ENV, variables = vars, platform = ARGUMENTS.get("PLATFORM", None), TARGET_ARCH=env["win_target_arch"])
+
+if env["PLATFORM"] == "win32" and env["qt"] :
+    # This adds Qt's binary directory at the end of the PATH variable, so that
+    # windeployqt.exe is automatically detected and used in WindowsBundle.py.
+    os.environ["PATH"] =  env['ENV']['PATH'] + ";" + env['qt'] + "\\bin"
 
 Help(vars.GenerateHelpText(env))
 
@@ -189,6 +208,13 @@ if env["PLATFORM"] != "darwin" and env["PLATFORM"] != "win32" :
     else:
         env["ENV"]["QT_SELECT"] = "qt4"
 
+# Set QT_SELECT variable to enable building on systems that have Qt4 and Qt5 installed and use qtselect
+if env["PLATFORM"] != "darwin" and env["PLATFORM"] != "win32" :
+    if env["qt5"] :
+        env["ENV"]["QT_SELECT"] = "qt5"
+    else:
+        env["ENV"]["QT_SELECT"] = "qt4"
+
 # Check whether we are running inside scan-build, and override compiler if so
 if "CCC_ANALYZER_HTML" in os.environ :
     for key, value in os.environ.items() :
@@ -243,11 +269,8 @@ if env["debug"] :
             env["PDB"] = '${TARGET.base}.pdb'
         if env["set_iterator_debug_level"] :
             env.Append(CPPDEFINES = ["_ITERATOR_DEBUG_LEVEL=0"])
-        if env["optimize"] :
-            env.Append(LINKFLAGS = ["/OPT:NOREF"])
-            env.Append(CCFLAGS = ["/MD"])
-        else :
-            env.Append(CCFLAGS = ["/MDd"])
+        env.Append(LINKFLAGS = ["/OPT:NOREF"])
+        env.Append(CCFLAGS = ["/MD"])
     else :
         env.Append(CCFLAGS = ["-g"])
 elif env["PLATFORM"] == "win32" :
@@ -319,7 +342,7 @@ elif env["PLATFORM"] == "sunos" :
     #env.Append(CXXFLAGS = ["-z verbose"])
     pass
 else :
-    if os.path.basename(env["CXX"]) in ["clang", "clang++"] :
+    if os.path.basename(env["CXX"]).startswith(("clang", "clang++")) :
         env.Append(CXXFLAGS = [
             "-Weverything",
             "-Wno-unknown-warning-option", # To stay compatible between CLang versions
@@ -337,6 +360,10 @@ else :
             "-Wno-missing-variable-declarations", # Getting rid of CPPUnit warnings
             "-Wno-direct-ivar-access", # Obj-C code warning
             "-Wno-potentially-evaluated-expression", # Caused due to calling shared_ptr::get() inside typeid()
+
+            "-Wno-inconsistent-missing-destructor-override", # FIXME: fix source code issues regarding this warning later
+            "-Wno-shadow-field", # FIXME: fix source code issues regarding this warning later
+            "-Wno-unused-template", # FIXME: fix source code issues regarding this warning later
             ])
     else :
         env.Append(CXXFLAGS = ["-Wextra", "-Wall", "-Wnon-virtual-dtor", "-Wundef", "-Wold-style-cast", "-Wno-long-long", "-Woverloaded-virtual", "-Wfloat-equal", "-Wredundant-decls", "-Wno-unknown-pragmas"])
@@ -374,6 +401,9 @@ if env["PLATFORM"] == "hpux" :
 # Code signing
 if env["PLATFORM"] == "darwin" :
     env["CODE_SIGN_IDENTITY"] = env["codesign_identity"]
+if env["PLATFORM"] == "win32" :
+    env["SIGNTOOL_KEY_PFX"] = env.get("signtool_key_pfx", None)
+    env["SIGNTOOL_TIMESTAMP_URL"] = env.get("signtool_timestamp_url", None)
 
 # Testing
 env["TEST_TYPE"] = env["test"]

@@ -6,6 +6,8 @@
 
 #include <Swiften/Parser/ExpatParser.h>
 
+#include <cassert>
+#include <memory>
 #include <string>
 
 #include <expat.h>

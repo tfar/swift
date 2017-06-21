@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -7,19 +7,23 @@
 #pragma once
 
 #include <map>
+#include <string>
 
 #include <QMap>
 #include <QMenu>
 #include <QPointer>
 #include <QString>
 #include <QTextCursor>
+#include <QVBoxLayout>
 
 #include <Swift/Controllers/UIInterfaces/ChatWindow.h>
 
+#include <SwifTools/EmojiMapper.h>
 #include <SwifTools/LastLineTracker.h>
 
 #include <Swift/QtUI/ChatSnippet.h>
 #include <Swift/QtUI/QtAffiliationEditor.h>
+#include <Swift/QtUI/QtEmojisSelector.h>
 #include <Swift/QtUI/QtMUCConfigurationWindow.h>
 #include <Swift/QtUI/QtSwiftUtil.h>
 #include <Swift/QtUI/QtTabbable.h>
@@ -40,7 +44,7 @@ namespace Swift {
     class UIEventStream;
     class QtChatWindowJSBridge;
     class SettingsProvider;
-    class QtEmoticonsGrid;
+    class QtSettingsProvider;
 
     class LabelModel : public QAbstractListModel {
         Q_OBJECT
@@ -78,7 +82,7 @@ namespace Swift {
         Q_OBJECT
 
         public:
-            QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventStream* eventStream, SettingsProvider* settings, const std::map<std::string, std::string>& emoticons);
+            QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventStream* eventStream, SettingsProvider* settings, QtSettingsProvider* qtOnlySettings, const std::map<std::string, std::string>& emoticonsMap);
             virtual ~QtChatWindow();
             std::string addMessage(const ChatMessage& message, const std::string &senderName, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const std::string& avatarPath, const boost::posix_time::ptime& time);
             std::string addAction(const ChatMessage& message, const std::string &senderName, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const std::string& avatarPath, const boost::posix_time::ptime& time);
@@ -90,7 +94,7 @@ namespace Swift {
             void replaceMessage(const ChatMessage& message, const std::string& id, const boost::posix_time::ptime& time);
             void replaceWithAction(const ChatMessage& message, const std::string& id, const boost::posix_time::ptime& time);
             // File transfer related stuff
-            std::string addFileTransfer(const std::string& senderName, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description);
+            std::string addFileTransfer(const std::string& senderName, const std::string& avatarPath, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description);
             void setFileTransferProgress(std::string id, const int percentageDone);
             void setFileTransferStatus(std::string id, const FileTransferState state, const std::string& msg);
 
@@ -134,9 +138,11 @@ namespace Swift {
             virtual void showBookmarkWindow(const MUCBookmark& bookmark);
             virtual void setBookmarkState(RoomBookmarkState bookmarkState);
             virtual std::string getID() const;
+            virtual void setEmphasiseFocus(bool emphasise);
 
         public slots:
             void handleChangeSplitterState(QByteArray state);
+            void handleEmojiClicked(QString emoji);
             void handleFontResized(int fontSizeSteps);
             AlertID addAlert(const std::string& alertText);
             void removeAlert(const AlertID id);
@@ -170,8 +176,7 @@ namespace Swift {
             void handleActionButtonClicked();
             void handleAffiliationEditorAccepted();
             void handleCurrentLabelChanged(int);
-            void handleEmoticonsButtonClicked();
-            void handleEmoticonClicked(QString emoticonAsText);
+            void handleEmojisButtonClicked();
             void handleTextInputReceivedFocus();
             void handleTextInputLostFocus();
 
@@ -186,6 +191,8 @@ namespace Swift {
             void handleAppendedToLog();
 
             static std::vector<JID> jidListFromQByteArray(const QByteArray& dataBytes);
+
+            void resetDayChangeTimer();
 
         private:
             int unreadCount_;
@@ -214,13 +221,14 @@ namespace Swift {
             bool tabCompletion_;
             UIEventStream* eventStream_;
             bool isOnline_;
-            QSplitter *logRosterSplitter_;
+            QSplitter* logRosterSplitter_;
             Tristate correctionEnabled_;
             Tristate fileTransferEnabled_;
             QString alertStyleSheet_;
             QPointer<QtMUCConfigurationWindow> mucConfigurationWindow_;
             QPointer<QtAffiliationEditor> affiliationEditor_;
-            SettingsProvider* settings_;
+            SettingsProvider* settings_ = nullptr;
+            QtSettingsProvider* qtOnlySettings_ = nullptr;
             std::vector<ChatWindow::RoomAction> availableRoomActions_;
             QPalette defaultLabelsPalette_;
             LabelModel* labelModel_;
@@ -229,6 +237,9 @@ namespace Swift {
             bool isMUC_;
             bool supportsImpromptuChat_;
             RoomBookmarkState roomBookmarkState_;
-            QMenu* emoticonsMenu_;
+            std::unique_ptr<QMenu> emojisMenu_;
+            QPointer<QtEmojisSelector> emojisGrid_;
+            std::map<std::string, std::string> emoticonsMap_;
+            QTimer* dayChangeTimer = nullptr;
     };
 }

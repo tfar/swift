@@ -8,9 +8,9 @@
 
 #include <memory>
 
-#include <Swiften/Base/foreach.h>
-
 #include <Sluift/ElementConvertors/BodyConvertor.h>
+#include <Sluift/ElementConvertors/CarbonsReceivedConvertor.h>
+#include <Sluift/ElementConvertors/CarbonsSentConvertor.h>
 #include <Sluift/ElementConvertors/CommandConvertor.h>
 #include <Sluift/ElementConvertors/DOMElementConvertor.h>
 #include <Sluift/ElementConvertors/DefaultElementConvertor.h>
@@ -63,6 +63,8 @@ LuaElementConvertors::LuaElementConvertors() {
     convertors.push_back(std::make_shared<MAMResultConvertor>(this));
     convertors.push_back(std::make_shared<MAMQueryConvertor>(this));
     convertors.push_back(std::make_shared<MAMFinConvertor>(this));
+    convertors.push_back(std::make_shared<CarbonsReceivedConvertor>(this));
+    convertors.push_back(std::make_shared<CarbonsSentConvertor>(this));
     convertors.push_back(std::make_shared<DOMElementConvertor>());
     convertors.push_back(std::make_shared<RawXMLElementConvertor>());
     convertors.push_back(std::make_shared<DefaultElementConvertor>());
@@ -91,7 +93,7 @@ std::shared_ptr<Element> LuaElementConvertors::convertFromLua(lua_State* L, int 
 
 std::shared_ptr<Element> LuaElementConvertors::convertFromLuaUntyped(lua_State* L, int index, const std::string& type) {
     index = Lua::absoluteOffset(L, index);
-    foreach (std::shared_ptr<LuaElementConvertor> convertor, convertors) {
+    for (auto&& convertor : convertors) {
         if (std::shared_ptr<Element> result = convertor->convertFromLua(L, index, type)) {
             return result;
         }
@@ -127,7 +129,7 @@ boost::optional<std::string> LuaElementConvertors::doConvertToLuaUntyped(
     if (!payload) {
         return LuaElementConvertor::NO_RESULT;
     }
-    foreach (std::shared_ptr<LuaElementConvertor> convertor, convertors) {
+    for (auto&& convertor : convertors) {
         if (boost::optional<std::string> type = convertor->convertToLua(L, payload)) {
             return *type;
         }

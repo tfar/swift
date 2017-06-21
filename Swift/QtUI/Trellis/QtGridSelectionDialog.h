@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Isode Limited.
+ * Copyright (c) 2014-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -29,6 +29,9 @@ namespace Swift {
             void setMaxGridSize(const QSize& size);
             QSize getMaxGridSize() const;
 
+            QSize getFrameSize() const;
+            int getDescriptionTextHeight() const;
+
         signals:
             void currentGridSizeChanged(QSize);
             void minGridSizeChanged(QSize);
@@ -37,21 +40,27 @@ namespace Swift {
         protected:
             void keyReleaseEvent(QKeyEvent* event);
             void mousePressEvent(QMouseEvent* event);
-            void mouseMoveEvent(QMouseEvent* event);
             void paintEvent(QPaintEvent* event);
             void showEvent(QShowEvent* event);
             void hideEvent(QHideEvent* event);
-            void leaveEvent(QEvent *event);
+            bool event(QEvent* event);
+            void timerEvent(QTimerEvent* event);
+
+    private:
+        int getDescriptionTextHeight(int width) const;
 
         private:
             int padding;
             int horizontalMargin;
             int verticalMargin;
+            int timerId = -1;
 
             QSize frameSize;
 
             QSize currentGridSize;
             QSize minGridSize;
             QSize maxGridSize;
+
+            const QString descriptionText;
     };
 }

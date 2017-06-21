@@ -57,7 +57,9 @@ myenv.Tool("textfile", toolpath = ["#/BuildTools/SCons/Tools"])
 qt4modules = ['QtCore', 'QtWebKit', 'QtGui']
 if myenv["qt5"] :
     qt_version = '5'
-    qt4modules += ['QtWidgets', 'QtWebKitWidgets', 'QtMultimedia']
+    # QtSvg is required so the image format plugin for SVG images is installed 
+    # correctly by Qt's deployment tools.
+    qt4modules += ['QtWidgets', 'QtWebKitWidgets', 'QtMultimedia', 'QtSvg']
     if env["PLATFORM"] != "win32" and env["PLATFORM"] != "darwin" :
         qt4modules += ['QtX11Extras']
 else :
@@ -69,6 +71,30 @@ if env["PLATFORM"] != "win32" and env["PLATFORM"] != "darwin" :
 
 myenv.EnableQt4Modules(qt4modules, debug = False, version = qt_version)
 
+
+## Qt related unit tests
+testQtEnv = env.Clone();
+testQtEnv.Tool("qt4", toolpath = ["#/BuildTools/SCons/Tools"])
+testQtEnv.EnableQt4Modules(qt4modules, debug = False, version = qt_version)
+env["SWIFT_QTUI_TEST_FLAGS"] = {}
+for key in ["CCFLAGS", "CPPFLAGS", "CPPPATH", "CPPDEFINES", "LIBS", "LINKFLAGS", "LIBPATH"] :
+    if key in testQtEnv:
+        env["SWIFT_QTUI_TEST_FLAGS"][key] = testQtEnv[key]
+
+env.Append(UNITTEST_SOURCES = [
+    File("UnitTest/QtUtilitiesTest.cpp")
+])
+
+myenv.Append(CPPPATH = ["."])
+
+# Qt requires applications to be build with the -fPIC flag on some 32-bit Linux distributions.
+if env["PLATFORM"] == "posix" :
+    testEnv = myenv.Clone()
+    conf = Configure(testEnv)
+    if conf.CheckDeclaration("QT_REDUCE_RELOCATIONS", "#include <QtCore/qconfig.h>") and conf.CheckDeclaration("__i386__"):
+        myenv.AppendUnique(CXXFLAGS = "-fPIC")
+    testEnv = conf.Finish()
+
 if env["PLATFORM"] == "win32" :
     #myenv.Append(LINKFLAGS = ["/SUBSYSTEM:CONSOLE"])
     myenv.Append(LINKFLAGS = ["/SUBSYSTEM:WINDOWS"])
@@ -76,13 +102,15 @@ if env["PLATFORM"] == "win32" :
     if myenv.get("HAVE_SCHANNEL", 0) :
         myenv.Append(LIBS = "Cryptui")
         myenv.Append(CPPDEFINES = "HAVE_SCHANNEL")
-        if env["debug"] and not env["optimize"]:
-            myenv.Append(LINKFLAGS = ["/NODEFAULTLIB:msvcrt"])
+
+if env["PLATFORM"] == "darwin" and env["HAVE_SPARKLE"] :
+    myenv.Append(LINKFLAGS = ["-Wl,-rpath,@loader_path/../Frameworks"])
 
 myenv.WriteVal("DefaultTheme.qrc", myenv.Value(generateQRCTheme(myenv.Dir("#/Swift/resources/themes/Default"), "Default")))
 
 sources = [
     "main.cpp",
+    "FlowLayout.cpp",
     "QtAboutWidget.cpp",
     "QtSpellCheckerWindow.cpp",
     "QtAvatarWidget.cpp",
@@ -123,14 +151,18 @@ sources = [
     "QtBookmarkDetailWindow.cpp",
     "QtAddBookmarkWindow.cpp",
     "QtEditBookmarkWindow.cpp",
+    "QtEmojisGrid.cpp",
+    "QtEmojiCell.cpp",
+    "QtEmojisScroll.cpp",
+    "QtEmojisSelector.cpp",
+    "QtRecentEmojisGrid.cpp",
     "QtEmoticonsGrid.cpp",
-    "QtEmoticonCell.cpp",
     "QtContactEditWindow.cpp",
     "QtContactEditWidget.cpp",
     "QtSingleWindow.cpp",
-    "QtHighlightEditor.cpp",
     "QtColorToolButton.cpp",
     "QtClosableLineEdit.cpp",
+    "QtHighlightNotificationConfigDialog.cpp",
     "ChatSnippet.cpp",
     "MessageSnippet.cpp",
     "SystemMessageSnippet.cpp",
@@ -142,7 +174,6 @@ sources = [
     "QtConnectionSettingsWindow.cpp",
     "Roster/RosterModel.cpp",
     "Roster/QtTreeWidget.cpp",
-#   "Roster/QtTreeWidgetItem.cpp",
     "Roster/RosterDelegate.cpp",
     "Roster/GroupItemDelegate.cpp",
     "Roster/DelegateCommons.cpp",
@@ -161,11 +192,13 @@ sources = [
     "ChatList/ChatListMUCItem.cpp",
     "ChatList/ChatListRecentItem.cpp",
     "ChatList/ChatListWhiteboardItem.cpp",
-    "MUCSearch/QtMUCSearchWindow.cpp",
+    "MUCSearch/MUCSearchDelegate.cpp",
+    "MUCSearch/MUCSearchEmptyItem.cpp",
     "MUCSearch/MUCSearchModel.cpp",
     "MUCSearch/MUCSearchRoomItem.cpp",
-    "MUCSearch/MUCSearchEmptyItem.cpp",
-    "MUCSearch/MUCSearchDelegate.cpp",
+    "MUCSearch/MUCSearchServiceItem.cpp",
+    "MUCSearch/QtLeafSortFilterProxyModel.cpp",
+    "MUCSearch/QtMUCSearchWindow.cpp",
     "UserSearch/ContactListDelegate.cpp",
     "UserSearch/ContactListModel.cpp",
     "UserSearch/QtContactListWidget.cpp",
@@ -195,9 +228,13 @@ sources = [
     "QtURLValidator.cpp",
     "QtResourceHelper.cpp",
     "QtSpellCheckHighlighter.cpp",
+    "QtUpdateFeedSelectionDialog.cpp",
     "Trellis/QtDynamicGridLayout.cpp",
     "Trellis/QtDNDTabBar.cpp",
-    "Trellis/QtGridSelectionDialog.cpp"
+    "Trellis/QtGridSelectionDialog.cpp",
+    "QtCheckBoxStyledItemDelegate.cpp",
+    "QtColorSelectionStyledItemDelegate.cpp",
+    "QtSoundSelectionStyledItemDelegate.cpp"
 ]
 
 if env["PLATFORM"] == "win32" :
@@ -292,9 +329,10 @@ myenv.Uic4("QtAffiliationEditor.ui")
 myenv.Uic4("QtJoinMUCWindow.ui")
 myenv.Uic4("QtHistoryWindow.ui")
 myenv.Uic4("QtConnectionSettings.ui")
-myenv.Uic4("QtHighlightEditor.ui")
+myenv.Uic4("QtHighlightNotificationConfigDialog.ui")
 myenv.Uic4("QtBlockListEditorWindow.ui")
 myenv.Uic4("QtSpellCheckerWindow.ui")
+myenv.Uic4("QtUpdateFeedSelectionDialog.ui")
 myenv.Qrc("DefaultTheme.qrc")
 myenv.Qrc("Swift.qrc")
 
@@ -306,8 +344,14 @@ commonResources = {
     "": ["#/Swift/resources/sounds"]
 }
 
+
+## COPYING file generation
 myenv["TEXTFILESUFFIX"] = ""
-myenv.MyTextfile(target = "COPYING", source = [myenv.File("../../COPYING.gpl"), myenv.File("../../COPYING.thirdparty")], LINESEPARATOR = "\n\n========\n\n\n")
+
+copying_files = [myenv.File("../../COPYING.gpl"), myenv.File("../../COPYING.thirdparty"), myenv.File("../../COPYING.dependencies")]
+if env["PLATFORM"] == "darwin" and env["HAVE_SPARKLE"] :
+    copying_files.append(env["SPARKLE_COPYING"])
+myenv.MyTextfile(target = "COPYING", source = copying_files, LINESEPARATOR = "\n\n========\n\n\n")
 
 ################################################################################
 # Translation
@@ -363,7 +407,7 @@ if env["PLATFORM"] == "darwin" :
     if env["HAVE_GROWL"] :
         frameworks.append(env["GROWL_FRAMEWORK"])
     commonResources[""] = commonResources.get("", []) + ["#/Swift/resources/MacOSX/Swift.icns"]
-    app = myenv.AppBundle("Swift", version = myenv["SWIFT_VERSION"], resources = commonResources, frameworks = frameworks, handlesXMPPURIs = True)
+    app = myenv.AppBundle("Swift", version = myenv["SWIFT_VERSION"], resources = commonResources, frameworks = frameworks, handlesXMPPURIs = True, sparklePublicDSAKey = myenv["SWIFT_SPARKLE_PUBLIC_DSA_KEY"])
     if env["DIST"] :
         myenv.Command(["#/Packages/Swift/Swift-${SWIFT_VERSION}.dmg"], [app], ["Swift/Packaging/MacOSX/package.sh " + app.path + " Swift/Packaging/MacOSX/Swift.dmg.gz $TARGET $QTDIR " + "\"$CODE_SIGN_IDENTITY\""])
         dsym = myenv.Command(["Swift-${SWIFT_VERSION}.dSYM"], ["Swift"], ["dsymutil -o ${TARGET} ${SOURCE}"])
@@ -397,7 +441,7 @@ if env["PLATFORM"] == "win32" :
             qtlibs.append("phonon")
             qtlibs = [lib + '4' for lib in qtlibs]
         else :
-            qtlibs += ['QtQuick', 'QtQml', 'QtPositioning', 'QtMultimedia', 'QtSql', 'QtSensors', 'QtWidgets', 'QtWebChannel', 'QtWebKitWidgets', 'QtMultimediaWidgets', 'QtOpenGL', 'QtPrintSupport']
+            qtlibs += ['QtQuick', 'QtQml', 'QtPositioning', 'QtMultimedia', 'QtSql', 'QtSensors', 'QtSvg', 'QtWidgets', 'QtWebChannel', 'QtWebKitWidgets', 'QtMultimediaWidgets', 'QtOpenGL', 'QtPrintSupport']
             qtlibs = [lib.replace('Qt', 'Qt5') for lib in qtlibs]
             qtlibs += ['icuin51', 'icuuc51', 'icudt51', 'libGLESv2', 'libEGL']
             qtplugins["platforms"] = ['windows']
@@ -447,7 +491,12 @@ if env["PLATFORM"] == "win32" :
             myenv.WiX_Heat('..\\Packaging\\WiX\\gen_files.wxs', windowsBundleFiles + copying)
             myenv.WiX_Candle('..\\Packaging\\WiX\\Swift.wixobj', '..\\Packaging\\WiX\\Swift.wxs')
             myenv.WiX_Candle('..\\Packaging\\WiX\\gen_files.wixobj', '..\\Packaging\\WiX\\gen_files.wxs')
-            myenv.WiX_Light('#/Packages/Swift/Swift-' + myenv["SWIFT_VERSION"] + '.msi', ['..\\Packaging\\WiX\\gen_files.wixobj','..\\Packaging\\WiX\\Swift.wixobj'])
+            lightTask = myenv.WiX_Light('#/Packages/Swift/Swift-' + myenv["SWIFT_VERSION"] + '.msi', ['..\\Packaging\\WiX\\gen_files.wixobj','..\\Packaging\\WiX\\Swift.wixobj'])
+            if myenv.get("SIGNTOOL_KEY_PFX", None) and myenv.get("SIGNTOOL_TIMESTAMP_URL", None) :
+                def signToolAction(target = None, source = None, env = None):
+                    env.Execute('signtool.exe sign /fd SHA256 /f "${SIGNTOOL_KEY_PFX}" /t "${SIGNTOOL_TIMESTAMP_URL}" ' + str(target[0]))
+
+                myenv.AddPostAction(lightTask, signToolAction)
 
             if myenv["debug"] :
                 myenv.InstallAs('#/Packages/Swift/Swift-' + myenv["SWIFT_VERSION"] + '.pdb', "Swift.pdb")

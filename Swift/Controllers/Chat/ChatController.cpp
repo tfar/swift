@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -12,8 +12,8 @@
 
 #include <Swiften/Avatars/AvatarManager.h>
 #include <Swiften/Base/Algorithm.h>
-#include <Swiften/Base/DateTime.h>
 #include <Swiften/Base/Log.h>
+#include <Swiften/Base/Path.h>
 #include <Swiften/Base/format.h>
 #include <Swiften/Chat/ChatStateNotifier.h>
 #include <Swiften/Chat/ChatStateTracker.h>
@@ -26,13 +26,15 @@
 #include <Swiften/Elements/DeliveryReceiptRequest.h>
 #include <Swiften/Elements/Idle.h>
 #include <Swiften/FileTransfer/FileTransferManager.h>
+#include <Swiften/Network/TimerFactory.h>
 
 #include <Swift/Controllers/Chat/ChatMessageParser.h>
 #include <Swift/Controllers/FileTransfer/FileTransferController.h>
-#include <Swift/Controllers/Highlighter.h>
+#include <Swift/Controllers/Highlighting/Highlighter.h>
 #include <Swift/Controllers/Intl.h>
 #include <Swift/Controllers/SettingConstants.h>
 #include <Swift/Controllers/StatusUtil.h>
+#include <Swift/Controllers/Translator.h>
 #include <Swift/Controllers/UIEvents/AcceptWhiteboardSessionUIEvent.h>
 #include <Swift/Controllers/UIEvents/CancelWhiteboardSessionUIEvent.h>
 #include <Swift/Controllers/UIEvents/InviteToMUCUIEvent.h>
@@ -50,11 +52,11 @@ namespace Swift {
 /**
  * The controller does not gain ownership of the stanzaChannel, nor the factory.
  */
-ChatController::ChatController(const JID& self, StanzaChannel* stanzaChannel, IQRouter* iqRouter, ChatWindowFactory* chatWindowFactory, const JID &contact, NickResolver* nickResolver, PresenceOracle* presenceOracle, AvatarManager* avatarManager, bool isInMUC, bool useDelayForLatency, UIEventStream* eventStream, EventController* eventController, TimerFactory* timerFactory, EntityCapsProvider* entityCapsProvider, bool userWantsReceipts, SettingsProvider* settings, HistoryController* historyController, MUCRegistry* mucRegistry, HighlightManager* highlightManager, ClientBlockListManager* clientBlockListManager, std::shared_ptr<ChatMessageParser> chatMessageParser, AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider)
-    : ChatControllerBase(self, stanzaChannel, iqRouter, chatWindowFactory, contact, presenceOracle, avatarManager, useDelayForLatency, eventStream, eventController, timerFactory, entityCapsProvider, historyController, mucRegistry, highlightManager, chatMessageParser, autoAcceptMUCInviteDecider), eventStream_(eventStream), userWantsReceipts_(userWantsReceipts), settings_(settings), clientBlockListManager_(clientBlockListManager) {
+ChatController::ChatController(const JID& self, StanzaChannel* stanzaChannel, IQRouter* iqRouter, ChatWindowFactory* chatWindowFactory, const JID &contact, NickResolver* nickResolver, PresenceOracle* presenceOracle, AvatarManager* avatarManager, bool isInMUC, bool useDelayForLatency, UIEventStream* eventStream, TimerFactory* timerFactory, EventController* eventController, EntityCapsProvider* entityCapsProvider, bool userWantsReceipts, SettingsProvider* settings, HistoryController* historyController, MUCRegistry* mucRegistry, HighlightManager* highlightManager, ClientBlockListManager* clientBlockListManager, std::shared_ptr<ChatMessageParser> chatMessageParser, AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider)
+    : ChatControllerBase(self, stanzaChannel, iqRouter, chatWindowFactory, contact, nickResolver, presenceOracle, avatarManager, useDelayForLatency, eventStream, eventController, entityCapsProvider, historyController, mucRegistry, highlightManager, chatMessageParser, autoAcceptMUCInviteDecider), userWantsReceipts_(userWantsReceipts), settings_(settings), clientBlockListManager_(clientBlockListManager) {
     isInMUC_ = isInMUC;
     lastWasPresence_ = false;
-    chatStateNotifier_ = new ChatStateNotifier(stanzaChannel, contact, entityCapsProvider);
+    chatStateNotifier_ = new ChatStateNotifier(stanzaChannel, contact, entityCapsProvider, timerFactory, 20000);
     chatStateTracker_ = new ChatStateTracker();
     nickResolver_ = nickResolver;
     presenceOracle_->onPresenceChange.connect(boost::bind(&ChatController::handlePresenceChange, this, _1));
@@ -74,7 +76,7 @@ ChatController::ChatController(const JID& self, StanzaChannel* stanzaChannel, IQ
     }
     Idle::ref idle;
     if (theirPresence && (idle = theirPresence->getPayload<Idle>())) {
-        startMessage += str(format(QT_TRANSLATE_NOOP("", ", who has been idle since %1%")) % dateTimeToLocalString(idle->getSince()));
+        startMessage += str(format(QT_TRANSLATE_NOOP("", ", who has been idle since %1%")) % Swift::Translator::getInstance()->ptimeToHumanReadableString(idle->getSince()));
     }
     startMessage += ": " + statusShowTypeToFriendlyName(theirPresence ? theirPresence->getShow() : StatusShow::None);
     if (theirPresence && !theirPresence->getStatus().empty()) {
@@ -84,6 +86,7 @@ ChatController::ChatController(const JID& self, StanzaChannel* stanzaChannel, IQ
     chatStateNotifier_->setContactIsOnline(theirPresence && theirPresence->getType() == Presence::Available);
     startMessage += ".";
     chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(startMessage), ChatWindow::DefaultDirection);
+    chatWindow_->onContinuationsBroken.connect([this, startMessage]() { chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(startMessage), ChatWindow::DefaultDirection); });
     chatWindow_->onUserTyping.connect(boost::bind(&ChatStateNotifier::setUserIsTyping, chatStateNotifier_));
     chatWindow_->onUserCancelsTyping.connect(boost::bind(&ChatStateNotifier::userCancelledNewMessage, chatStateNotifier_));
     chatWindow_->onFileTransferStart.connect(boost::bind(&ChatController::handleFileTransferStart, this, _1, _2));
@@ -210,9 +213,10 @@ void ChatController::preHandleIncomingMessage(std::shared_ptr<MessageEvent> mess
 }
 
 void ChatController::postHandleIncomingMessage(std::shared_ptr<MessageEvent> messageEvent, const ChatWindow::ChatMessage& chatMessage) {
+    highlighter_->handleSystemNotifications(chatMessage, messageEvent);
     eventController_->handleIncomingEvent(messageEvent);
     if (!messageEvent->getConcluded()) {
-        handleHighlightActions(chatMessage);
+        highlighter_->handleSoundNotifications(chatMessage);
     }
 }
 
@@ -297,7 +301,7 @@ void ChatController::handleUnblockUserRequest() {
 }
 
 void ChatController::handleInviteToChat(const std::vector<JID>& droppedJIDs) {
-    std::shared_ptr<UIEvent> event(new RequestInviteToMUCUIEvent(toJID_.toBare(), droppedJIDs, RequestInviteToMUCUIEvent::Impromptu));
+    std::shared_ptr<UIEvent> event(new RequestInviteToMUCUIEvent(getToJID(), droppedJIDs, RequestInviteToMUCUIEvent::Impromptu));
     eventStream_->send(event);
 }
 
@@ -307,7 +311,7 @@ void ChatController::handleWindowClosed() {
 
 void ChatController::handleUIEvent(std::shared_ptr<UIEvent> event) {
     std::shared_ptr<InviteToMUCUIEvent> inviteEvent = std::dynamic_pointer_cast<InviteToMUCUIEvent>(event);
-    if (inviteEvent && inviteEvent->getRoom() == toJID_.toBare()) {
+    if (inviteEvent && inviteEvent->getOriginator() == getToJID()) {
         onConvertToMUC(detachChatWindow(), inviteEvent->getInvites(), inviteEvent->getReason());
     }
 }
@@ -367,7 +371,15 @@ void ChatController::setOnline(bool online) {
 
 void ChatController::handleNewFileTransferController(FileTransferController* ftc) {
     std::string nick = senderDisplayNameFromMessage(ftc->getOtherParty());
-    std::string ftID = ftc->setChatWindow(chatWindow_, nick);
+    std::string avatarPath;
+    if (ftc->isIncoming()) {
+        avatarPath = pathToString(avatarManager_->getAvatarPath(ftc->getOtherParty()));
+    }
+    else {
+        avatarPath = pathToString(avatarManager_->getAvatarPath(selfJID_));
+    }
+
+    std::string ftID = ftc->setChatWindow(chatWindow_, nick, avatarPath);
     ftControllers[ftID] = ftc;
     lastWasPresence_ = false;
 
@@ -466,7 +478,7 @@ std::string ChatController::getStatusChangeString(std::shared_ptr<Presence> pres
     }
     Idle::ref idle;
     if ((idle = presence->getPayload<Idle>())) {
-        response += str(format(QT_TRANSLATE_NOOP("", " and has been idle since %1%")) % dateTimeToLocalString(idle->getSince()));
+        response += str(format(QT_TRANSLATE_NOOP("", " and has been idle since %1%")) % Swift::Translator::getInstance()->ptimeToHumanReadableString(idle->getSince()));
     }
 
     if (!response.empty()) {
@@ -528,6 +540,20 @@ boost::optional<boost::posix_time::ptime> ChatController::getMessageTimestamp(st
     return message->getTimestamp();
 }
 
+void ChatController::addMessageHandleIncomingMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& timeStamp) {
+    lastMessagesIDs_[from.toBare()] = {messageID, addMessage(message, senderDisplayNameFromMessage(from), senderIsSelf, label, avatarManager_->getAvatarPath(from), timeStamp)};
+}
+
+void ChatController::handleIncomingReplaceMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, const std::string& idToReplace, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& timeStamp) {
+    auto lastMessage = lastMessagesIDs_.find(from.toBare());
+    if ((lastMessage != lastMessagesIDs_.end()) && (lastMessage->second.idInStream == idToReplace)) {
+        replaceMessage(message, lastMessage->second.idInWindow, timeStamp);
+    }
+    else {
+        addMessageHandleIncomingMessage(from, message, messageID, senderIsSelf, label, timeStamp);
+    }
+}
+
 void ChatController::logMessage(const std::string& message, const JID& fromJID, const JID& toJID, const boost::posix_time::ptime& timeStamp, bool /* isIncoming */) {
     HistoryMessage::Type type;
     if (mucRegistry_->isMUC(fromJID.toBare()) || mucRegistry_->isMUC(toJID.toBare())) {
@@ -540,6 +566,22 @@ void ChatController::logMessage(const std::string& message, const JID& fromJID, 
     if (historyController_) {
         historyController_->addMessage(message, fromJID, toJID, type, timeStamp);
     }
+}
+
+bool ChatController::shouldIgnoreMessage(std::shared_ptr<Message> message) {
+    if (!message->getID().empty()) {
+        if (message->getID() == lastHandledMessageID_) {
+            return true;
+        }
+        else {
+            lastHandledMessageID_ = message->getID();
+        }
+    }
+    return false;
+}
+
+JID ChatController::messageCorrectionJID(const JID& fromJID) {
+    return fromJID.toBare();
 }
 
 ChatWindow* ChatController::detachChatWindow() {

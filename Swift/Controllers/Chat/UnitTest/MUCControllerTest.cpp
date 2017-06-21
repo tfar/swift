@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -11,7 +11,6 @@
 #include <hippomocks.h>
 
 #include <Swiften/Avatars/NullAvatarManager.h>
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Client/ClientBlockListManager.h>
 #include <Swiften/Client/DummyStanzaChannel.h>
 #include <Swiften/Client/NickResolver.h>
@@ -63,6 +62,12 @@ class MUCControllerTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testSubjectChangeIncorrectA);
     CPPUNIT_TEST(testSubjectChangeIncorrectB);
     CPPUNIT_TEST(testSubjectChangeIncorrectC);
+    CPPUNIT_TEST(testHandleOccupantNicknameChanged);
+    CPPUNIT_TEST(testHandleOccupantNicknameChangedRoster);
+    CPPUNIT_TEST(testHandleChangeSubjectRequest);
+
+    CPPUNIT_TEST(testNonImpromptuMUCWindowTitle);
+
     CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -90,20 +95,23 @@ public:
         entityCapsProvider_ = new DummyEntityCapsProvider();
         settings_ = new DummySettingsProvider();
         highlightManager_ = new HighlightManager(settings_);
+        highlightManager_->resetToDefaultConfiguration();
         muc_ = std::make_shared<MockMUC>(mucJID_);
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(muc_->getJID(), uiEventStream_).Return(window_);
-        chatMessageParser_ = std::make_shared<ChatMessageParser>(std::map<std::string, std::string>(), highlightManager_->getRules(), true);
+        chatMessageParser_ = std::make_shared<ChatMessageParser>(std::map<std::string, std::string>(), highlightManager_->getConfiguration(), ChatMessageParser::Mode::GroupChat);
         vcardStorage_ = new VCardMemoryStorage(crypto_.get());
         vcardManager_ = new VCardManager(self_, iqRouter_, vcardStorage_);
+        nickResolver_ = new NickResolver(self_, xmppRoster_, vcardManager_, mucRegistry_);
         clientBlockListManager_ = new ClientBlockListManager(iqRouter_);
         mucBookmarkManager_ = new MUCBookmarkManager(iqRouter_);
-        controller_ = new MUCController (self_, muc_, boost::optional<std::string>(), nick_, stanzaChannel_, iqRouter_, chatWindowFactory_, presenceOracle_, avatarManager_, uiEventStream_, false, timerFactory, eventController_, entityCapsProvider_, nullptr, nullptr, mucRegistry_, highlightManager_, clientBlockListManager_, chatMessageParser_, false, nullptr, vcardManager_, mucBookmarkManager_);
+        controller_ = new MUCController (self_, muc_, boost::optional<std::string>(), nick_, stanzaChannel_, iqRouter_, chatWindowFactory_, nickResolver_, presenceOracle_, avatarManager_, uiEventStream_, false, timerFactory, eventController_, entityCapsProvider_, nullptr, nullptr, mucRegistry_, highlightManager_, clientBlockListManager_, chatMessageParser_, false, nullptr, vcardManager_, mucBookmarkManager_);
     }
 
     void tearDown() {
         delete controller_;
         delete mucBookmarkManager_;
         delete clientBlockListManager_;
+        delete nickResolver_;
         delete vcardManager_;
         delete vcardStorage_;
         delete highlightManager_;
@@ -132,6 +140,27 @@ public:
         status->addStatusCode(code);
         presence->addPayload(status);
         stanzaChannel_->onPresenceReceived(presence);
+    }
+
+    void joinCompleted() {
+        std::string messageBody("test message");
+        window_->onSendMessageRequest(messageBody, false);
+        std::shared_ptr<Stanza> rawStanza = stanzaChannel_->sentStanzas[stanzaChannel_->sentStanzas.size() - 1];
+        Message::ref message = std::dynamic_pointer_cast<Message>(rawStanza);
+        CPPUNIT_ASSERT(stanzaChannel_->isAvailable()); /* Otherwise will prevent sends. */
+        CPPUNIT_ASSERT(message);
+        CPPUNIT_ASSERT_EQUAL(messageBody, message->getBody().get_value_or(""));
+
+        {
+            Message::ref message = std::make_shared<Message>();
+            message->setType(Message::Groupchat);
+            message->setTo(self_);
+            message->setFrom(mucJID_.withResource("SomeNickname"));
+            message->setID(iqChannel_->getNewIQID());
+            message->setSubject("Initial");
+
+            controller_->handleIncomingMessage(std::make_shared<MessageEvent>(message));
+        }
     }
 
     void testAddressedToSelf() {
@@ -163,21 +192,24 @@ public:
         message->setBody("Hi " + boost::to_lower_copy(nick_) + ".");
         message->setType(Message::Groupchat);
         controller_->handleIncomingMessage(MessageEvent::ref(new MessageEvent(message)));
-        CPPUNIT_ASSERT_EQUAL((size_t)4, eventController_->getEvents().size());
+
+        // The last message is ignored because self-mention highlights are matched case
+        // sensitive against the nickname.
+        CPPUNIT_ASSERT_EQUAL((size_t)3, eventController_->getEvents().size());
 
         message = Message::ref(new Message());
         message->setFrom(JID(muc_->getJID().toString() + "/other3"));
         message->setBody("Hi bert.");
         message->setType(Message::Groupchat);
         controller_->handleIncomingMessage(MessageEvent::ref(new MessageEvent(message)));
-        CPPUNIT_ASSERT_EQUAL((size_t)4, eventController_->getEvents().size());
+        CPPUNIT_ASSERT_EQUAL((size_t)3, eventController_->getEvents().size());
 
         message = Message::ref(new Message());
         message->setFrom(JID(muc_->getJID().toString() + "/other2"));
         message->setBody("Hi " + boost::to_lower_copy(nick_) + "ie.");
         message->setType(Message::Groupchat);
         controller_->handleIncomingMessage(MessageEvent::ref(new MessageEvent(message)));
-        CPPUNIT_ASSERT_EQUAL((size_t)4, eventController_->getEvents().size());
+        CPPUNIT_ASSERT_EQUAL((size_t)3, eventController_->getEvents().size());
     }
 
     void testNotAddressedToSelf() {
@@ -371,8 +403,7 @@ public:
         occupants.insert(occupant_map::value_type("Ernie", MUCOccupant("Ernie", MUCOccupant::Participant, MUCOccupant::Owner)));
 
         /* populate the MUC with fake users */
-        typedef const std::pair<std::string,MUCOccupant> occupantIterator;
-        foreach(occupantIterator &occupant, occupants) {
+        for (auto&& occupant : occupants) {
             muc_->insertOccupant(occupant.second);
         }
 
@@ -387,7 +418,7 @@ public:
         alterations.push_back(MUCOccupant("Remko", MUCOccupant::NoRole, MUCOccupant::NoAffiliation));
         alterations.push_back(MUCOccupant("Ernie", MUCOccupant::Visitor, MUCOccupant::Outcast));
 
-        foreach(const MUCOccupant& alteration, alterations) {
+        for (const auto& alteration : alterations) {
             /* perform an alteration to a user's role and affiliation */
             occupant_map::iterator occupant = occupants.find(alteration.getNick());
             CPPUNIT_ASSERT(occupant != occupants.end());
@@ -404,20 +435,14 @@ public:
     }
 
     void testSubjectChangeCorrect() {
-        std::string messageBody("test message");
-        window_->onSendMessageRequest(messageBody, false);
-        std::shared_ptr<Stanza> rawStanza = stanzaChannel_->sentStanzas[stanzaChannel_->sentStanzas.size() - 1];
-        Message::ref message = std::dynamic_pointer_cast<Message>(rawStanza);
-        CPPUNIT_ASSERT(stanzaChannel_->isAvailable()); /* Otherwise will prevent sends. */
-        CPPUNIT_ASSERT(message);
-        CPPUNIT_ASSERT_EQUAL(messageBody, message->getBody().get_value_or(""));
+        joinCompleted();
 
         {
             Message::ref message = std::make_shared<Message>();
             message->setType(Message::Groupchat);
             message->setTo(self_);
             message->setFrom(mucJID_.withResource("SomeNickname"));
-            message->setID(iqChannel_->getNewIQID());
+            message->setID("3FB99C56-7C92-4755-91B0-9C0098BC7AE0");
             message->setSubject("New Room Subject");
 
             controller_->handleIncomingMessage(std::make_shared<MessageEvent>(message));
@@ -429,13 +454,7 @@ public:
      * Test that message stanzas with subject element and non-empty body element do not cause a subject change.
      */
     void testSubjectChangeIncorrectA() {
-        std::string messageBody("test message");
-        window_->onSendMessageRequest(messageBody, false);
-        std::shared_ptr<Stanza> rawStanza = stanzaChannel_->sentStanzas[stanzaChannel_->sentStanzas.size() - 1];
-        Message::ref message = std::dynamic_pointer_cast<Message>(rawStanza);
-        CPPUNIT_ASSERT(stanzaChannel_->isAvailable()); /* Otherwise will prevent sends. */
-        CPPUNIT_ASSERT(message);
-        CPPUNIT_ASSERT_EQUAL(messageBody, message->getBody().get_value_or(""));
+        joinCompleted();
 
         {
             Message::ref message = std::make_shared<Message>();
@@ -455,13 +474,7 @@ public:
      * Test that message stanzas with subject element and thread element do not cause a subject change.
      */
     void testSubjectChangeIncorrectB() {
-        std::string messageBody("test message");
-        window_->onSendMessageRequest(messageBody, false);
-        std::shared_ptr<Stanza> rawStanza = stanzaChannel_->sentStanzas[stanzaChannel_->sentStanzas.size() - 1];
-        Message::ref message = std::dynamic_pointer_cast<Message>(rawStanza);
-        CPPUNIT_ASSERT(stanzaChannel_->isAvailable()); /* Otherwise will prevent sends. */
-        CPPUNIT_ASSERT(message);
-        CPPUNIT_ASSERT_EQUAL(messageBody, message->getBody().get_value_or(""));
+        joinCompleted();
 
         {
             Message::ref message = std::make_shared<Message>();
@@ -481,13 +494,7 @@ public:
      * Test that message stanzas with subject element and empty body element do not cause a subject change.
      */
     void testSubjectChangeIncorrectC() {
-        std::string messageBody("test message");
-        window_->onSendMessageRequest(messageBody, false);
-        std::shared_ptr<Stanza> rawStanza = stanzaChannel_->sentStanzas[stanzaChannel_->sentStanzas.size() - 1];
-        Message::ref message = std::dynamic_pointer_cast<Message>(rawStanza);
-        CPPUNIT_ASSERT(stanzaChannel_->isAvailable()); /* Otherwise will prevent sends. */
-        CPPUNIT_ASSERT(message);
-        CPPUNIT_ASSERT_EQUAL(messageBody, message->getBody().get_value_or(""));
+        joinCompleted();
 
         {
             Message::ref message = std::make_shared<Message>();
@@ -503,13 +510,68 @@ public:
         }
     }
 
+    void testHandleOccupantNicknameChanged() {
+        const auto occupantCount = [&](const std::string & nick) {
+            auto roster = window_->getRosterModel();
+            CPPUNIT_ASSERT(roster != nullptr);
+            const auto currentOccupantsJIDs = roster->getJIDs();
+            int count = 0;
+            for (auto & p : currentOccupantsJIDs) {
+                if (p.getResource() == nick) {
+                    ++count;
+                }
+            }
+            return count;
+        };
+
+        muc_->insertOccupant(MUCOccupant("TestUserOne", MUCOccupant::Participant, MUCOccupant::Owner));
+        muc_->insertOccupant(MUCOccupant("TestUserTwo", MUCOccupant::Participant, MUCOccupant::Owner));
+        muc_->insertOccupant(MUCOccupant("TestUserThree", MUCOccupant::Participant, MUCOccupant::Owner));
+
+        muc_->onOccupantNicknameChanged("TestUserOne", "TestUserTwo");
+
+        CPPUNIT_ASSERT_EQUAL(0, occupantCount("TestUserOne"));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserTwo"));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserThree"));
+    }
+
+    void testHandleOccupantNicknameChangedRoster() {
+        const auto occupantCount = [&](const std::string & nick) {
+            auto roster = window_->getRosterModel();
+            CPPUNIT_ASSERT(roster != nullptr);
+            const auto participants = roster->getGroup("Participants");
+            CPPUNIT_ASSERT(participants != nullptr);
+            const auto displayedParticipants = participants->getDisplayedChildren();
+            int count = 0;
+            for (auto & p : displayedParticipants) {
+                if (p->getDisplayName() == nick) {
+                    ++count;
+                }
+            }
+            return count;
+        };
+
+        muc_->insertOccupant(MUCOccupant("TestUserOne", MUCOccupant::Participant, MUCOccupant::Owner));
+        muc_->insertOccupant(MUCOccupant("TestUserTwo", MUCOccupant::Participant, MUCOccupant::Owner));
+        muc_->insertOccupant(MUCOccupant("TestUserThree", MUCOccupant::Participant, MUCOccupant::Owner));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserOne"));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserTwo"));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserThree"));
+
+        muc_->onOccupantNicknameChanged("TestUserOne", "TestUserTwo");
+
+        CPPUNIT_ASSERT_EQUAL(0, occupantCount("TestUserOne"));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserTwo"));
+        CPPUNIT_ASSERT_EQUAL(1, occupantCount("TestUserThree"));
+    }
+
     void testRoleAffiliationStatesVerify(const std::map<std::string, MUCOccupant> &occupants) {
         /* verify that the roster is in sync */
         GroupRosterItem* group = window_->getRosterModel()->getRoot();
-        foreach(RosterItem* rosterItem, group->getChildren()) {
+        for (auto rosterItem : group->getChildren()) {
             GroupRosterItem* child = dynamic_cast<GroupRosterItem*>(rosterItem);
             CPPUNIT_ASSERT(child);
-            foreach(RosterItem* childItem, child->getChildren()) {
+            for (auto childItem : child->getChildren()) {
                 ContactRosterItem* item = dynamic_cast<ContactRosterItem*>(childItem);
                 CPPUNIT_ASSERT(item);
                 std::map<std::string, MUCOccupant>::const_iterator occupant = occupants.find(item->getJID().getResource());
@@ -518,6 +580,17 @@ public:
                 CPPUNIT_ASSERT(item->getMUCAffiliation() == occupant->second.getAffiliation());
             }
         }
+    }
+
+    void testHandleChangeSubjectRequest() {
+        std::string testStr("New Subject");
+        CPPUNIT_ASSERT_EQUAL(std::string(""), muc_->newSubjectSet_);
+        window_->onChangeSubjectRequest(testStr);
+        CPPUNIT_ASSERT_EQUAL(testStr, muc_->newSubjectSet_);
+    }
+
+    void testNonImpromptuMUCWindowTitle() {
+        CPPUNIT_ASSERT_EQUAL(muc_->getJID().getNode(), window_->name_);
     }
 
 private:
@@ -532,7 +605,7 @@ private:
     ChatWindowFactory* chatWindowFactory_;
     UserSearchWindowFactory* userSearchWindowFactory_;
     MUCController* controller_;
-//    NickResolver* nickResolver_;
+    NickResolver* nickResolver_;
     PresenceOracle* presenceOracle_;
     AvatarManager* avatarManager_;
     StanzaChannelPresenceSender* presenceSender_;

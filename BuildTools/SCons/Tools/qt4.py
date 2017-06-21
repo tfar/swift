@@ -209,7 +209,7 @@ def _detect(env):
         moc = env.WhereIs('moc-qt4') or env.WhereIs('moc4') or env.WhereIs('moc')
     if moc:
         # Test whether the moc command we found is real, or whether it is just the qtchooser dummy.
-        p = subprocess.Popen([moc, "-v"], shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen([moc, "-v"], shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env["ENV"])
         p.communicate()
         if p.returncode == 0:
             import sys
@@ -477,7 +477,7 @@ def enable_modules(self, modules, debug=False, crosscompiling=False, version='4'
 
 
     include_flag = "-I"
-    if os.path.basename(self["CC"]) in ("gcc", "clang"):
+    if os.path.basename(self["CC"]).startswith(("gcc", "clang")):
         include_flag = "-isystem"
 
 
@@ -516,8 +516,11 @@ def enable_modules(self, modules, debug=False, crosscompiling=False, version='4'
                 test_conf.Finish()
                 raise Exception('Qt installation is missing packages. The following are required: %s' % modules_str)
                 return
-            test_conf.env.ParseConfig("pkg-config --cflags --libs " + modules_str)
-            self.AppendUnique(LIBS=test_conf.env["LIBS"], LIBPATH=test_conf.env["LIBPATH"], CPPPATH=test_conf.env["CPPPATH"])
+
+            def parse_conf_as_system(env, cmd, unique=1):
+                return env.MergeFlags(cmd.replace("-I/", include_flag + "/"), unique)
+
+            test_conf.env.ParseConfig("pkg-config --cflags --libs " + modules_str, parse_conf_as_system)
             self["QT4_MOCCPPPATH"] = self["CPPPATH"]
             test_conf.Finish()
             return
@@ -563,7 +566,7 @@ def enable_modules(self, modules, debug=False, crosscompiling=False, version='4'
         if len(self["QTDIR"]) > 0 :
             self.AppendUnique(LIBPATH=[os.path.join('$QTDIR','lib')])
             self.AppendUnique(LINKFLAGS="-F$QTDIR/lib")
-            self.AppendUnique(CPPFLAGS="-iframework$QTDIR/lib")
+            self.AppendUnique(CPPFLAGS=["-iframework$QTDIR/lib", include_flag + os.path.join("$QTDIR", "include")])
             self.Append(LINKFLAGS="-Wl,-rpath,$QTDIR/lib")
 
         # FIXME: Phonon Hack
@@ -576,9 +579,9 @@ def enable_modules(self, modules, debug=False, crosscompiling=False, version='4'
                 self.AppendUnique(LIBPATH=[os.path.join("$QTDIR","lib")])
             else :
                 if len(self["QTDIR"]) > 0 :
-                    self.Append(CPPFLAGS = [include_flag + os.path.join("$QTDIR", "lib", module + ".framework", "Versions", version, "Headers")])
+                    self.Append(CPPFLAGS = [include_flag + os.path.join("$QTDIR", "lib", module + ".framework", "Headers")])
                 else :
-                    self.Append(CPPFLAGS = [include_flag + os.path.join("/Library/Frameworks", module + ".framework", "Versions", version, "Headers")])
+                    self.Append(CPPFLAGS = [include_flag + os.path.join("/Library/Frameworks", module + ".framework", "Headers")])
                 self.Append(LINKFLAGS=['-framework', module])
         if 'QtOpenGL' in modules:
             self.AppendUnique(LINKFLAGS="-F/System/Library/Frameworks")

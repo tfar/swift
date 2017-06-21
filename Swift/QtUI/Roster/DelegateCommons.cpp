@@ -6,12 +6,12 @@
 
 #include <Swift/QtUI/Roster/DelegateCommons.h>
 
+#include <QColor>
 #include <QFileInfo>
 
 #include <Swift/QtUI/QtScaledAvatarCache.h>
 
 namespace Swift {
-
 
 void DelegateCommons::drawElidedText(QPainter* painter, const QRect& region, const QString& text, int flags) {
     QString adjustedText(painter->fontMetrics().elidedText(text, Qt::ElideRight, region.width(), Qt::TextShowMnemonic));
@@ -21,7 +21,7 @@ void DelegateCommons::drawElidedText(QPainter* painter, const QRect& region, con
 }
 
 void DelegateCommons::paintContact(QPainter* painter, const QStyleOptionViewItem& option, const QColor& nameColor, const QString& avatarPath, const QIcon& presenceIcon, const QString& name, const QString& statusText, bool isIdle, int unreadCount, bool compact) const {
-        painter->save();
+    painter->save();
     QRect fullRegion(option.rect);
     if ( option.state & QStyle::State_Selected ) {
         painter->fillRect(fullRegion, option.palette.highlight());
@@ -29,6 +29,8 @@ void DelegateCommons::paintContact(QPainter* painter, const QStyleOptionViewItem
     } else {
         painter->setPen(QPen(nameColor));
     }
+    auto secondLineColor = painter->pen().color();
+    secondLineColor.setAlphaF(0.7);
 
     QRect presenceIconRegion(QPoint(farLeftMargin, fullRegion.top()), QSize(presenceIconWidth, fullRegion.height() - verticalMargin));
 
@@ -45,7 +47,7 @@ void DelegateCommons::paintContact(QPainter* painter, const QStyleOptionViewItem
         }
     }
     if (!compact && avatarPixmap.isNull()) {
-        avatarPixmap = QPixmap(":/icons/avatar.png").scaled(avatarRegion.height(), avatarRegion.width(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        avatarPixmap = QPixmap(":/icons/avatar.svg").scaled(avatarRegion.height(), avatarRegion.width(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
     }
 
     if (!compact) {
@@ -72,7 +74,7 @@ void DelegateCommons::paintContact(QPainter* painter, const QStyleOptionViewItem
 
     if (!compact) {
         painter->setFont(detailFont);
-        painter->setPen(QPen(QColor(160,160,160)));
+        painter->setPen(QPen(secondLineColor));
 
         QRect statusTextRegion(textRegion.adjusted(0, nameHeight, 0, 0));
         DelegateCommons::drawElidedText(painter, statusTextRegion, statusText);

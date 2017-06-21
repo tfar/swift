@@ -9,7 +9,7 @@
 #include <memory>
 #include <string>
 
-#include <boost/optional/optional_fwd.hpp>
+#include <boost/optional/optional.hpp>
 
 #include <Swiften/Base/API.h>
 
@@ -35,6 +35,6 @@ namespace Swift {
 
         private:
             struct Private;
-            std::shared_ptr<Private> p;
+            const std::unique_ptr<Private> p;
     };
 }

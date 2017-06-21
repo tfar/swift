@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Isode Limited.
+ * Copyright (c) 2013-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -9,10 +9,8 @@
 #include <boost/lambda/lambda.hpp>
 
 #include <Swiften/Base/IDGenerator.h>
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Disco/ClientDiscoManager.h>
 #include <Swiften/Elements/DiscoInfo.h>
-#include <Swiften/Elements/MAMQuery.h>
 #include <Swiften/Elements/Message.h>
 #include <Swiften/Elements/Presence.h>
 #include <Swiften/Elements/RawXMLPayload.h>
@@ -98,20 +96,45 @@ static std::vector< std::shared_ptr<Payload> > getPayloadsFromTable(lua_State* L
     return result;
 }
 
+static void setOptions(lua_State* L, SluiftClient* client) {
+    Lua::checkType(L, 2, LUA_TTABLE);
+    lua_getfield(L, 2, "host");
+    if (!lua_isnil(L, -1)) {
+        client->getOptions().manualHostname = lua_tostring(L, -1);
+    }
+    lua_getfield(L, 2, "port");
+    if (!lua_isnil(L, -1)) {
+        client->getOptions().manualPort = boost::numeric_cast<int>(lua_tointeger(L, -1));
+    }
+    lua_getfield(L, 2, "ack");
+    if (!lua_isnil(L, -1)) {
+        client->getOptions().useAcks = lua_toboolean(L, -1);
+    }
+    lua_getfield(L, 2, "compress");
+    if (!lua_isnil(L, -1)) {
+        client->getOptions().useStreamCompression = lua_toboolean(L, -1);
+    }
+    lua_getfield(L, 2, "tls");
+    if (!lua_isnil(L, -1)) {
+        bool useTLS = lua_toboolean(L, -1);
+        client->getOptions().useTLS = (useTLS ? ClientOptions::UseTLSWhenAvailable : ClientOptions::NeverUseTLS);
+    }
+    lua_getfield(L, 2, "bosh_url");
+    if (!lua_isnil(L, -1)) {
+        client->getOptions().boshURL = URL::fromString(lua_tostring(L, -1));
+    }
+    lua_getfield(L, 2, "allow_plain_without_tls");
+    if (!lua_isnil(L, -1)) {
+        client->getOptions().allowPLAINWithoutTLS = lua_toboolean(L, -1);
+    }
+    lua_pushvalue(L, 1);
+}
+
+
 SLUIFT_LUA_FUNCTION(Client, async_connect) {
     SluiftClient* client = getClient(L);
-
-    std::string host = client->getOptions().manualHostname;
-    int port = client->getOptions().manualPort;
-    if (lua_istable(L, 2)) {
-        if (boost::optional<std::string> hostString = Lua::getStringField(L, 2, "host")) {
-            host = *hostString;
-        }
-        if (boost::optional<int> portInt = Lua::getIntField(L, 2, "port")) {
-            port = *portInt;
-        }
-    }
-    client->connect(host, port);
+    setOptions(L, client);
+    client->connect();
     return 0;
 }
 
@@ -186,7 +209,7 @@ SLUIFT_LUA_FUNCTION_WITH_HELP(
 
     SluiftClient* client = getClient(L);
     Lua::Table contactsTable;
-    foreach(const XMPPRosterItem& item, client->getRoster(getGlobalTimeout(L))) {
+    for (const auto& item : client->getRoster(getGlobalTimeout(L))) {
         std::string subscription;
         switch(item.getSubscription()) {
             case RosterItemPayload::None: subscription = "none"; break;
@@ -205,6 +228,70 @@ SLUIFT_LUA_FUNCTION_WITH_HELP(
     pushValue(L, contactsTable);
     Lua::registerTableToString(L, -1);
     return 1;
+}
+
+SLUIFT_LUA_FUNCTION_WITH_HELP(
+        Client, get_block_list,
+        "Returns a table of all the items in the blocking list.",
+        "self\n",
+        ""
+) {
+    Sluift::globals.eventLoop.runOnce();
+    SluiftClient* client = getClient(L);
+    lua_newtable(L);
+    int i = 0;
+    for (const auto& item : client->getBlockList(getGlobalTimeout(L))) {
+        lua_pushstring(L, item.toString().c_str());
+        lua_rawseti(L, -2, boost::numeric_cast<int>(++i));
+    }
+    Lua::registerTableToString(L, -1);
+    return 1;
+}
+
+SLUIFT_LUA_FUNCTION_WITH_HELP(
+        Client, add_block,
+        "Adds a user or domain to the blocking list.",
+        "self\n",
+        "jid  the JID of the user or domain to add to the blocking list\n"
+
+) {
+    SluiftClient* client = getClient(L);
+    JID jid(Lua::checkString(L, 2));
+    int timeout = getGlobalTimeout(L);
+
+    std::shared_ptr<BlockPayload> payload = std::make_shared<BlockPayload>(std::vector<JID>(1, jid));
+    return client->sendRequest(
+        std::make_shared< GenericRequest<BlockPayload> >(IQ::Set, JID(), payload, client->getClient()->getIQRouter()), timeout).convertToLuaResult(L);
+}
+
+SLUIFT_LUA_FUNCTION_WITH_HELP(
+        Client, remove_block,
+        "Removes a user or domain from the blocking list.",
+        "self\n",
+        "jid  the JID of the user or domain to remove from the blocking list\n"
+
+) {
+    SluiftClient* client = getClient(L);
+    JID jid(Lua::checkString(L, 2));
+    int timeout = getGlobalTimeout(L);
+
+    std::shared_ptr<UnblockPayload> payload = std::make_shared<UnblockPayload>(std::vector<JID>(1, jid));
+    return client->sendRequest(
+        std::make_shared< GenericRequest<UnblockPayload> >(IQ::Set, JID(), payload, client->getClient()->getIQRouter()), timeout).convertToLuaResult(L);
+}
+
+SLUIFT_LUA_FUNCTION_WITH_HELP(
+        Client, remove_all_block,
+        "Removes all users and domains from the blocking list.",
+        "self\n",
+        ""
+) {
+    SluiftClient* client = getClient(L);
+    int timeout = getGlobalTimeout(L);
+
+    std::shared_ptr<UnblockPayload> payload = std::make_shared<UnblockPayload>(std::vector<JID>());
+    return client->sendRequest(
+        std::make_shared< GenericRequest<UnblockPayload> >(IQ::Set, JID(), payload, client->getClient()->getIQRouter()), timeout).convertToLuaResult(L);
 }
 
 SLUIFT_LUA_FUNCTION_WITH_HELP(
@@ -271,6 +358,9 @@ SLUIFT_LUA_FUNCTION_WITH_HELP(
     }
     message->addPayloads(payloads.begin(), payloads.end());
     message->setType(type);
+    if (!getClient(L)->getClient()->isAvailable()) {
+        throw Lua::Exception("Trying to send message while client is offline.");
+    }
     getClient(L)->getClient()->sendMessage(message);
     return 0;
 }
@@ -316,7 +406,9 @@ SLUIFT_LUA_FUNCTION_WITH_HELP(
         std::vector< std::shared_ptr<Payload> > payloads = getPayloadsFromTable(L, index);
         presence->addPayloads(payloads.begin(), payloads.end());
     }
-
+    if (!getClient(L)->getClient()->getPresenceSender()->isAvailable()) {
+        throw Lua::Exception("Trying to send presence while client is offline.");
+    }
     getClient(L)->getClient()->getPresenceSender()->sendPresence(presence);
     lua_pushvalue(L, 1);
     return 0;
@@ -402,7 +494,9 @@ SLUIFT_LUA_FUNCTION_WITH_HELP(
         ""
 ) {
     Sluift::globals.eventLoop.runOnce();
-
+    if (!getClient(L)->getClient()->isAvailable()) {
+        throw Lua::Exception("Trying to send data while client is offline.");
+    }
     getClient(L)->getClient()->sendData(std::string(Lua::checkString(L, 2)));
     lua_pushvalue(L, 1);
     return 0;
@@ -424,37 +518,7 @@ SLUIFT_LUA_FUNCTION_WITH_HELP(
         "allow_plain_without_tls  Allow PLAIN authentication without a TLS encrypted connection\n"
 ) {
     SluiftClient* client = getClient(L);
-    Lua::checkType(L, 2, LUA_TTABLE);
-    lua_getfield(L, 2, "host");
-    if (!lua_isnil(L, -1)) {
-        client->getOptions().manualHostname = lua_tostring(L, -1);
-    }
-    lua_getfield(L, 2, "port");
-    if (!lua_isnil(L, -1)) {
-        client->getOptions().manualPort = boost::numeric_cast<int>(lua_tointeger(L, -1));
-    }
-    lua_getfield(L, 2, "ack");
-    if (!lua_isnil(L, -1)) {
-        client->getOptions().useAcks = lua_toboolean(L, -1);
-    }
-    lua_getfield(L, 2, "compress");
-    if (!lua_isnil(L, -1)) {
-        client->getOptions().useStreamCompression = lua_toboolean(L, -1);
-    }
-    lua_getfield(L, 2, "tls");
-    if (!lua_isnil(L, -1)) {
-        bool useTLS = lua_toboolean(L, -1);
-        client->getOptions().useTLS = (useTLS ? ClientOptions::UseTLSWhenAvailable : ClientOptions::NeverUseTLS);
-    }
-    lua_getfield(L, 2, "bosh_url");
-    if (!lua_isnil(L, -1)) {
-        client->getOptions().boshURL = URL::fromString(lua_tostring(L, -1));
-    }
-    lua_getfield(L, 2, "allow_plain_without_tls");
-    if (!lua_isnil(L, -1)) {
-        client->getOptions().allowPLAINWithoutTLS = lua_toboolean(L, -1);
-    }
-    lua_pushvalue(L, 1);
+    setOptions(L, client);
     return 0;
 }
 
@@ -487,6 +551,7 @@ static void pushEvent(lua_State* L, const SluiftClient::Event& event) {
             Lua::Table result = boost::assign::map_list_of
                 ("type", std::make_shared<Lua::Value>(std::string("message")))
                 ("from", std::make_shared<Lua::Value>(message->getFrom().toString()))
+                ("to", std::make_shared<Lua::Value>(message->getTo().toString()))
                 ("body", std::make_shared<Lua::Value>(message->getBody().get_value_or("")))
                 ("message_type", std::make_shared<Lua::Value>(MessageConvertor::convertMessageTypeToString(message->getType())));
             Lua::pushValue(L, result);
@@ -499,6 +564,7 @@ static void pushEvent(lua_State* L, const SluiftClient::Event& event) {
             Lua::Table result = boost::assign::map_list_of
                 ("type", std::make_shared<Lua::Value>(std::string("presence")))
                 ("from", std::make_shared<Lua::Value>(presence->getFrom().toString()))
+                ("to", std::make_shared<Lua::Value>(presence->getTo().toString()))
                 ("status", std::make_shared<Lua::Value>(presence->getStatus()))
                 ("presence_type", std::make_shared<Lua::Value>(PresenceConvertor::convertPresenceTypeToString(presence->getType())));
             Lua::pushValue(L, result);
@@ -518,6 +584,23 @@ static void pushEvent(lua_State* L, const SluiftClient::Event& event) {
             lua_pushvalue(L, -3);
             lua_call(L, 1, 0);
             lua_pop(L, 1);
+            break;
+        }
+        case SluiftClient::Event::BlockEventType: {
+            Lua::Table result = boost::assign::map_list_of
+                ("type", std::make_shared<Lua::Value>(std::string("block")))
+                ("jid",  std::make_shared<Lua::Value>(event.item.toString()));
+            Lua::pushValue(L, result);
+            Lua::registerTableToString(L, -1);
+            break;
+        }
+        case SluiftClient::Event::UnblockEventType: {
+            Lua::Table result = boost::assign::map_list_of
+                ("type", std::make_shared<Lua::Value>(std::string("unblock")))
+                ("jid",  std::make_shared<Lua::Value>(event.item.toString()));
+            Lua::pushValue(L, result);
+            Lua::registerTableToString(L, -1);
+            break;
         }
     }
 }

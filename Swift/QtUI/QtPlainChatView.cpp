@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 Isode Limited.
+ * Copyright (c) 2013-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -18,7 +18,6 @@
 #include <QVBoxLayout>
 
 #include <Swiften/Base/FileSize.h>
-#include <Swiften/Base/foreach.h>
 
 #include <Swift/Controllers/UIEvents/JoinMUCUIEvent.h>
 #include <Swift/Controllers/UIEvents/UIEventStream.h>
@@ -45,7 +44,7 @@ QtPlainChatView::~QtPlainChatView() {
 
 QString chatMessageToString(const ChatWindow::ChatMessage& message) {
     QString result;
-    foreach (std::shared_ptr<ChatWindow::ChatMessagePart> part, message.getParts()) {
+    for (auto&& part : message.getParts()) {
         std::shared_ptr<ChatWindow::ChatTextMessagePart> textPart;
         std::shared_ptr<ChatWindow::ChatURIMessagePart> uriPart;
         std::shared_ptr<ChatWindow::ChatEmoticonMessagePart> emoticonPart;
@@ -177,7 +176,7 @@ void QtPlainChatView::setAckState(const std::string& /*id*/, ChatWindow::AckStat
     }
 }
 
-std::string QtPlainChatView::addFileTransfer(const std::string& senderName, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description)
+std::string QtPlainChatView::addFileTransfer(const std::string& senderName, const std::string& /*avatarPath*/, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description)
 {
     const std::string ftId = "ft" + boost::lexical_cast<std::string>(idGenerator_++);
     const std::string sizeString = formatSize(sizeInBytes);

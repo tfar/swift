@@ -11,7 +11,6 @@
 #include <QShortcut>
 
 #include <Swiften/Base/Platform.h>
-#include <Swiften/Base/foreach.h>
 
 #include <Swift/QtUI/QtChatTabs.h>
 #include <Swift/QtUI/QtUtilities.h>
@@ -23,7 +22,7 @@ QtTabbable::QtTabbable() : QWidget() {
 }
 
 QtTabbable::~QtTabbable() {
-    emit windowClosing();
+
 }
 
 bool QtTabbable::isWidgetSelected() {
@@ -64,6 +63,11 @@ bool QtTabbable::event(QEvent* event) {
         }
     }
     return QWidget::event(event);
+}
+
+void QtTabbable::closeEvent(QCloseEvent* event) {
+    emit windowClosing();
+    event->accept();
 }
 
 }

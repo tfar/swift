@@ -59,11 +59,32 @@ scons
 scons dist=1
 ```
 
+To sign the resulting MSI file, append the `signtool_key_pfx` and `signtool_timestamp_url` parameters to the `scons dist=1` programm call, e.g.
+`scons dist=1 signtool_key_pfx=C:\Users\Swift\SwiftSPC.pfx signtool_timestamp_url=http://timestamp.verisign.com/scripts/timstamp.dll`.
+
 Notes:
 - The settings `debug = 1` and `optimize = 1` are **strictly required** if you use a precompiled Qt release from the Qt Project; otherwise you will get linker errors
 - On 64-bit Windows it's "Program Files (x86)" instead of "Program Files" in the
   paths
 - Currently only 32-bit builds of the Swift client are supported
+
+## Automatic Software Updates
+Automatic software updates allow distribution of updates directly to the end users.
+This is useful for general feature updates, bug fixes and especially for security
+updates.
+
+### Automatic Software Updates for Mac OS X using Sparkle
+Swift supports integration with the software update framework [Sparkle](https://sparkle-project.org/) on OS X. For security reasons,
+Sparkle requires the application to be either code-signed or a bundled public DSA
+key. In case you do not code-sign, you can provide the path to the public DSA key
+to be bundled with the application bundle via the `sparkle_public_dsa_key` SCons
+argument.
+
+To build with Sparkle support, simply download Sparkle-1.14.0 and extract it to
+`3rdParty/Sparkle/Sparkle-1.14.0`. SCons will pick it up during configuration
+and build Swift with Sparkle support.
+
+The appcast URLs are specified in `Swift/QtUI/SwiftUpdateFeeds.h`.
 
 ## Building Swiften for Android
 This section describes how to build Swiften for Android. It can then be used from any Android native code. This guide has been tested on OS X and Linux.

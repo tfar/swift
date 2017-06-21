@@ -1,3 +1,22 @@
+4.0-rc2 ( 2017-05-22 )
+----------------------
+- Fix regression in chat window titles for chat rooms
+
+4.0-rc1 ( 2017-05-17 )
+----------------------
+- Fix UI layout issue for translations that require right-to-left (RTL) layout
+- macOS releases are now code-signed with a key from Apple, so they can be run without Gatekeeper trust warnings
+- Handle sessions being closed by the server
+- Fix Last Message Correction in multi client scenarios
+- Fix display of default avatar on Windows
+- Support for automatic software updates on macOS
+- Redesigned keyword highlighing
+- Support for unicode emojis on macOS
+- Improvements to font size handling in the chat theme
+- Fix UX issues in trellis mode
+- Improve date formatting
+- And assorted smaller features and usability enhancements
+
 4.0-beta2 ( 2016-07-20 )
 ------------------------
 - Fix Swift bug introduced in 4.0-beta1 that results in the UI sometimes getting stuck during login

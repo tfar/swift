@@ -1,12 +1,14 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
 
 #include <Swift/QtUI/QtChatWindow.h>
 
+#include <map>
 #include <memory>
+#include <string>
 
 #include <boost/cstdint.hpp>
 #include <boost/lexical_cast.hpp>
@@ -19,6 +21,7 @@
 #include <QDebug>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -33,10 +36,12 @@
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QTime>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 
 #include <Swiften/Base/Log.h>
+#include <Swiften/Base/Platform.h>
 
 #include <Swift/Controllers/Roster/ContactRosterItem.h>
 #include <Swift/Controllers/Roster/Roster.h>
@@ -46,11 +51,12 @@
 #include <Swift/Controllers/UIEvents/SendFileUIEvent.h>
 #include <Swift/Controllers/UIEvents/UIEventStream.h>
 
+#include <SwifTools/EmojiMapper.h>
 #include <SwifTools/TabComplete.h>
 
 #include <Swift/QtUI/QtAddBookmarkWindow.h>
 #include <Swift/QtUI/QtEditBookmarkWindow.h>
-#include <Swift/QtUI/QtEmoticonsGrid.h>
+#include <Swift/QtUI/QtEmojisSelector.h>
 #include <Swift/QtUI/QtPlainChatView.h>
 #include <Swift/QtUI/QtScaledAvatarCache.h>
 #include <Swift/QtUI/QtSettingsProvider.h>
@@ -62,8 +68,7 @@
 
 namespace Swift {
 
-QtChatWindow::QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventStream* eventStream, SettingsProvider* settings, const std::map<std::string, std::string>& emoticons) : QtTabbable(), id_(Q2PSTRING(contact)), contact_(contact), nextAlertId_(0), eventStream_(eventStream), blockingState_(BlockingUnsupported), isMUC_(false), supportsImpromptuChat_(false), roomBookmarkState_(RoomNotBookmarked) {
-    settings_ = settings;
+QtChatWindow::QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventStream* eventStream, SettingsProvider* settings, QtSettingsProvider* qtOnlySettings, const std::map<std::string, std::string>& emoticonsMap) : QtTabbable(), id_(Q2PSTRING(contact)), contact_(contact), nextAlertId_(0), eventStream_(eventStream), settings_(settings), qtOnlySettings_(qtOnlySettings), blockingState_(BlockingUnsupported), isMUC_(false), supportsImpromptuChat_(false), roomBookmarkState_(RoomNotBookmarked), emoticonsMap_(emoticonsMap) {
     unreadCount_ = 0;
     isOnline_ = true;
     completer_ = nullptr;
@@ -110,7 +115,7 @@ QtChatWindow::QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventSt
     }
     logRosterSplitter_->addWidget(messageLog_);
 
-    treeWidget_ = new QtOccupantListWidget(eventStream_, settings_, QtTreeWidget::MessageDefaultJID, this);
+    treeWidget_ = new QtOccupantListWidget(eventStream_, settings_, QtTreeWidget::MessageDisplayJID, this);
     treeWidget_->hide();
     logRosterSplitter_->addWidget(treeWidget_);
     logRosterSplitter_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -145,17 +150,19 @@ QtChatWindow::QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventSt
 
     connect(input_, SIGNAL(receivedFocus()), this, SLOT(handleTextInputReceivedFocus()));
     connect(input_, SIGNAL(lostFocus()), this, SLOT(handleTextInputLostFocus()));
-    QPushButton* emoticonsButton_ = new QPushButton(this);
-    emoticonsButton_->setIcon(QIcon(":/emoticons/smile.png"));
-    connect(emoticonsButton_, SIGNAL(clicked()), this, SLOT(handleEmoticonsButtonClicked()));
+    connect(input_, SIGNAL(itemDropped(QDropEvent*)), this, SLOT(dropEvent(QDropEvent*)));
+    QPushButton* emojisButton_ = new QPushButton(this);
 
-    emoticonsMenu_ = new QMenu(this);
-    QtEmoticonsGrid* emoticonsGrid = new QtEmoticonsGrid(emoticons, emoticonsMenu_);
-    connect(emoticonsGrid, SIGNAL(emoticonClicked(QString)), this, SLOT(handleEmoticonClicked(QString)));
+#ifdef SWIFTEN_PLATFORM_MACOSX
+    emojisButton_->setText("\xF0\x9F\x98\x83");
+#else
+    emojisButton_->setIcon(QIcon(":/emoticons/smile.png"));
+#endif
+    connect(emojisButton_, SIGNAL(clicked()), this, SLOT(handleEmojisButtonClicked()));
 
     // using an extra layout to work around Qt margin glitches on OS X
     QHBoxLayout* actionLayout = new QHBoxLayout();
-    actionLayout->addWidget(emoticonsButton_);
+    actionLayout->addWidget(emojisButton_);
     actionLayout->addWidget(actionButton_);
 
     inputBarLayout->addLayout(actionLayout);
@@ -184,9 +191,20 @@ QtChatWindow::QtChatWindow(const QString& contact, QtChatTheme* theme, UIEventSt
     settings_->onSettingChanged.connect(boost::bind(&QtChatWindow::handleSettingChanged, this, _1));
     messageLog_->showEmoticons(settings_->getSetting(QtUISettingConstants::SHOW_EMOTICONS));
     setMinimumSize(100, 100);
+
+    dayChangeTimer = new QTimer(this);
+    dayChangeTimer->setSingleShot(true);
+    connect(dayChangeTimer, &QTimer::timeout, [this](){
+        addSystemMessage(ChatMessage(Q2PSTRING(tr("The day is now %1").arg(QDateTime::currentDateTime().date().toString(Qt::SystemLocaleLongDate)))), ChatWindow::DefaultDirection);
+        onContinuationsBroken();
+        resetDayChangeTimer();
+    });
+
+    resetDayChangeTimer();
 }
 
 QtChatWindow::~QtChatWindow() {
+    dayChangeTimer->stop();
     settings_->onSettingChanged.disconnect(boost::bind(&QtChatWindow::handleSettingChanged, this, _1));
     if (mucConfigurationWindow_) {
         delete mucConfigurationWindow_.data();
@@ -201,7 +219,7 @@ void QtChatWindow::handleSettingChanged(const std::string& setting) {
 }
 
 void QtChatWindow::handleLogCleared() {
-    onLogCleared();
+    onContinuationsBroken();
 }
 
 void QtChatWindow::handleOccupantSelectionChanged(RosterItem* item) {
@@ -311,7 +329,7 @@ void QtChatWindow::beginCorrection() {
     cursor.endEditBlock();
     isCorrection_ = true;
     correctingLabel_->show();
-    input_->setStyleSheet(alertStyleSheet_);
+    input_->setCorrectionHighlight(true);
     labelsWidget_->setEnabled(false);
 }
 
@@ -325,7 +343,7 @@ void QtChatWindow::cancelCorrection() {
     cursor.removeSelectedText();
     isCorrection_ = false;
     correctingLabel_->hide();
-    input_->setStyleSheet(qApp->styleSheet());
+    input_->setCorrectionHighlight(false);
     labelsWidget_->setEnabled(true);
 }
 
@@ -386,7 +404,7 @@ void QtChatWindow::setAvailableSecurityLabels(const std::vector<SecurityLabelsCa
     int i = 0;
     int defaultIndex = 0;
     labelsWidget_->setModel(labelModel_);
-    foreach (SecurityLabelsCatalog::Item label, labels) {
+    for (const auto& label : labels) {
         if (label.getIsDefault()) {
             defaultIndex = i;
             break;
@@ -454,7 +472,6 @@ void QtChatWindow::closeEvent(QCloseEvent* event) {
 
 void QtChatWindow::convertToMUC(MUCType mucType) {
     impromptu_ = (mucType == ImpromptuMUC);
-    treeWidget_->setMessageTarget(impromptu_ ? QtTreeWidget::MessageDisplayJID : QtTreeWidget::MessageDefaultJID);
     isMUC_ = true;
     treeWidget_->show();
     subject_->setVisible(!impromptu_);
@@ -652,6 +669,12 @@ std::vector<JID> QtChatWindow::jidListFromQByteArray(const QByteArray& dataBytes
     return invites;
 }
 
+void QtChatWindow::resetDayChangeTimer() {
+    assert(dayChangeTimer);
+    // Add a second so the handled is definitly called on the next day, and not multiple times exactly at midnight.
+    dayChangeTimer->start(QtUtilities::secondsToNextMidnight(QDateTime::currentDateTime()) * 1000 + 1000);
+}
+
 void QtChatWindow::setAvailableOccupantActions(const std::vector<OccupantAction>& actions) {
     treeWidget_->setAvailableOccupantActions(actions);
 }
@@ -663,15 +686,31 @@ void QtChatWindow::setSubject(const std::string& subject) {
     subject_->setCursorPosition(0);
 }
 
-void QtChatWindow::handleEmoticonsButtonClicked() {
-    emoticonsMenu_->adjustSize();
-    QSize menuSize = emoticonsMenu_->size();
-    emoticonsMenu_->exec(QPoint(QCursor::pos().x() - menuSize.width(), QCursor::pos().y() - menuSize.height()));
+void QtChatWindow::handleEmojisButtonClicked() {
+    // Create QtEmojisSelector and QMenu
+    emojisGrid_ = new QtEmojisSelector(qtOnlySettings_->getQSettings(), emoticonsMap_);
+    auto emojisLayout = new QVBoxLayout();
+    emojisLayout->setContentsMargins(style()->pixelMetric(QStyle::PM_MenuHMargin),style()->pixelMetric(QStyle::PM_MenuVMargin),
+                                     style()->pixelMetric(QStyle::PM_MenuHMargin),style()->pixelMetric(QStyle::PM_MenuVMargin));
+    emojisLayout->addWidget(emojisGrid_);
+    emojisMenu_ = std::unique_ptr<QMenu>(new QMenu());
+    emojisMenu_->setLayout(emojisLayout);
+    emojisMenu_->adjustSize();
+
+    connect(emojisGrid_, SIGNAL(emojiClicked(QString)), this, SLOT(handleEmojiClicked(QString)));
+
+    QSize menuSize = emojisMenu_->size();
+    emojisMenu_->exec(QPoint(QCursor::pos().x() - menuSize.width(), QCursor::pos().y() - menuSize.height()));
 }
 
-void QtChatWindow::handleEmoticonClicked(QString emoticonAsText) {
-    input_->textCursor().insertText(emoticonAsText);
-    input_->setFocus();
+void QtChatWindow::handleEmojiClicked(QString emoji) {
+    if (isVisible()) {
+        input_->textCursor().insertText(emoji);
+        input_->setFocus();
+        // The next line also deletes the emojisGrid_, as it was added to the
+        // layout of the emojisMenu_.
+        emojisMenu_.reset();
+    }
 }
 
 void QtChatWindow::handleTextInputReceivedFocus() {
@@ -712,8 +751,7 @@ void QtChatWindow::handleActionButtonClicked() {
 
     }
     else {
-        foreach(ChatWindow::RoomAction availableAction, availableRoomActions_)
-        {
+        for (auto&& availableAction : availableRoomActions_) {
             if (impromptu_) {
                 // hide options we don't need in impromptu chats
                 if (availableAction == ChatWindow::ChangeSubject ||
@@ -843,6 +881,10 @@ std::string QtChatWindow::getID() const {
     return id_;
 }
 
+void QtChatWindow::setEmphasiseFocus(bool emphasise) {
+    input_->setEmphasiseFocus(emphasise);
+}
+
 void QtChatWindow::showRoomConfigurationForm(Form::ref form) {
     if (mucConfigurationWindow_) {
         delete mucConfigurationWindow_.data();
@@ -904,9 +946,9 @@ void QtChatWindow::replaceWithAction(const ChatMessage& message, const std::stri
     messageLog_->replaceWithAction(message, id, time);
 }
 
-std::string QtChatWindow::addFileTransfer(const std::string& senderName, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description) {
+std::string QtChatWindow::addFileTransfer(const std::string& senderName, const std::string& avatarPath, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description) {
     handleAppendedToLog();
-    return messageLog_->addFileTransfer(senderName, senderIsSelf, filename, sizeInBytes, description);
+    return messageLog_->addFileTransfer(senderName, avatarPath, senderIsSelf, filename, sizeInBytes, description);
 }
 
 void QtChatWindow::setFileTransferProgress(std::string id, const int percentageDone) {

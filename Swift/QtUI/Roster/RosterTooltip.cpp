@@ -20,6 +20,7 @@
 
 #include <Swift/Controllers/Roster/ContactRosterItem.h>
 #include <Swift/Controllers/StatusUtil.h>
+#include <Swift/Controllers/Translator.h>
 
 #include <Swift/QtUI/QtResourceHelper.h>
 #include <Swift/QtUI/QtScaledAvatarCache.h>
@@ -85,7 +86,7 @@ QString RosterTooltip::buildDetailedTooltip(ContactRosterItem* contact, QtScaled
         contact->onVCardRequested();
     }
 
-    QString scaledAvatarPath = cachedImageScaler->getScaledAvatarPath(P2QSTRING(contact->getAvatarPath().empty() ? ":/icons/avatar.png" : pathToString(contact->getAvatarPath())));
+    QString scaledAvatarPath = cachedImageScaler->getScaledAvatarPath(P2QSTRING(contact->getAvatarPath().empty() ? ":/icons/avatar.svg" : pathToString(contact->getAvatarPath())));
 
     QString bareJID = contact->getDisplayJID().toString().empty() ? "" : "( " + P2QSTRING(contact->getDisplayJID().toString()) + " )";
 
@@ -93,15 +94,17 @@ QString RosterTooltip::buildDetailedTooltip(ContactRosterItem* contact, QtScaled
 
     QString statusMessage = contact->getStatusText().empty() ? QObject::tr("(No message)") : P2QSTRING(contact->getStatusText());
 
-    QString idleString = P2QSTRING(contact->getIdleText());
-    if (!idleString.isEmpty()) {
-        idleString = QObject::tr("Idle since %1").arg(idleString);
+    boost::posix_time::ptime idleTime = contact->getIdle();
+    QString idleString;
+    if (!idleTime.is_not_a_date_time()) {
+        idleString = QObject::tr("Idle since %1").arg(P2QSTRING(Swift::Translator::getInstance()->ptimeToHumanReadableString(idleTime)));
         idleString = htmlEscape(idleString) + "<br/>";
     }
 
-    QString lastSeen = P2QSTRING(contact->getOfflineSinceText());
-    if (!lastSeen.isEmpty()) {
-        lastSeen = QObject::tr("Last seen %1").arg(lastSeen);
+    boost::posix_time::ptime lastSeenTime = contact->getOfflineSince();
+    QString lastSeen;
+    if (!lastSeenTime.is_not_a_date_time()) {
+        lastSeen = QObject::tr("Last seen %1").arg(P2QSTRING(Swift::Translator::getInstance()->ptimeToHumanReadableString(lastSeenTime)));
         lastSeen = htmlEscape(lastSeen) + "<br/>";
     }
 
@@ -119,7 +122,7 @@ QString RosterTooltip::buildVCardSummary(VCard::ref vcard) {
 
     // star | name | content
     QString currentBlock;
-    foreach (const VCard::Telephone& tel, vcard->getTelephones()) {
+    for (const auto& tel : vcard->getTelephones()) {
         QString type = tel.isFax ? QObject::tr("Fax") : QObject::tr("Telephone");
         QString field = buildVCardField(tel.isPreferred, type, htmlEscape(P2QSTRING(tel.number)));
         if (tel.isPreferred) {
@@ -131,7 +134,7 @@ QString RosterTooltip::buildVCardSummary(VCard::ref vcard) {
     summary += currentBlock;
 
     currentBlock = "";
-    foreach (const VCard::EMailAddress& mail, vcard->getEMailAddresses()) {
+    for (const auto& mail : vcard->getEMailAddresses()) {
         QString field = buildVCardField(mail.isPreferred, QObject::tr("E-Mail"), htmlEscape(P2QSTRING(mail.address)));
         if (mail.isPreferred) {
             currentBlock = field;
@@ -142,14 +145,14 @@ QString RosterTooltip::buildVCardSummary(VCard::ref vcard) {
     summary += currentBlock;
 
     currentBlock = "";
-    foreach (const VCard::Organization& org, vcard->getOrganizations()) {
+    for (const auto& org : vcard->getOrganizations()) {
         QString field = buildVCardField(false, QObject::tr("Organization"), htmlEscape(P2QSTRING(org.name)));
         currentBlock += field;
     }
     summary += currentBlock;
 
     currentBlock = "";
-    foreach(const std::string& title, vcard->getTitles()) {
+    for (const auto& title : vcard->getTitles()) {
         QString field = buildVCardField(false, QObject::tr("Title"), htmlEscape(P2QSTRING(title)));
         currentBlock += field;
     }

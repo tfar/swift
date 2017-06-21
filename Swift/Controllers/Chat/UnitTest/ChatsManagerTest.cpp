@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -16,6 +16,8 @@
 #include <Swiften/Avatars/AvatarMemoryStorage.h>
 #include <Swiften/Avatars/NullAvatarManager.h>
 #include <Swiften/Base/Algorithm.h>
+#include <Swiften/Base/Log.h>
+#include <Swiften/Base/LogSerializers.h>
 #include <Swiften/Client/Client.h>
 #include <Swiften/Client/ClientBlockListManager.h>
 #include <Swiften/Client/DummyStanzaChannel.h>
@@ -33,6 +35,7 @@
 #include <Swiften/FileTransfer/UnitTest/DummyFileTransferManager.h>
 #include <Swiften/Jingle/JingleSessionManager.h>
 #include <Swiften/MUC/MUCManager.h>
+#include <Swiften/Network/DummyTimerFactory.h>
 #include <Swiften/Presence/DirectedPresenceSender.h>
 #include <Swiften/Presence/PresenceOracle.h>
 #include <Swiften/Presence/StanzaChannelPresenceSender.h>
@@ -46,10 +49,12 @@
 #include <Swift/Controllers/Chat/ChatsManager.h>
 #include <Swift/Controllers/Chat/MUCController.h>
 #include <Swift/Controllers/Chat/UnitTest/MockChatListWindow.h>
+#include <Swift/Controllers/EventNotifier.h>
 #include <Swift/Controllers/FileTransfer/FileTransferOverview.h>
 #include <Swift/Controllers/ProfileSettingsProvider.h>
 #include <Swift/Controllers/SettingConstants.h>
 #include <Swift/Controllers/Settings/DummySettingsProvider.h>
+#include <Swift/Controllers/UIEvents/CreateImpromptuMUCUIEvent.h>
 #include <Swift/Controllers/UIEvents/JoinMUCUIEvent.h>
 #include <Swift/Controllers/UIEvents/RequestChatUIEvent.h>
 #include <Swift/Controllers/UIEvents/UIEventStream.h>
@@ -63,7 +68,42 @@
 #include <Swift/Controllers/WhiteboardManager.h>
 #include <Swift/Controllers/XMPPEvents/EventController.h>
 
+#include <SwifTools/Notifier/Notifier.h>
+
+#include <Swift/QtUI/QtSwiftUtil.h>
+#include <Swiften/MUC/UnitTest/MockMUC.h>
+
 using namespace Swift;
+
+class DummyNotifier : public Notifier {
+    public:
+        virtual void showMessage(
+            Type type,
+            const std::string& subject,
+            const std::string& description,
+            const boost::filesystem::path& picture,
+            boost::function<void()> callback) {
+            notifications.push_back({type, subject, description, picture, callback});
+        }
+
+        /** Remove any pending callbacks. */
+        virtual void purgeCallbacks() {
+
+        }
+
+    public:
+        struct Notification {
+            Type type;
+            std::string subject;
+            std::string description;
+            boost::filesystem::path picture;
+            boost::function<void()> callback;
+        };
+
+    public:
+        std::vector<Notification> notifications;
+};
+
 
 class ChatsManagerTest : public CppUnit::TestFixture {
     CPPUNIT_TEST_SUITE(ChatsManagerTest);
@@ -81,26 +121,46 @@ class ChatsManagerTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testChatControllerPresenceAccessUpdatedOnSubscriptionChangeToFrom);
     CPPUNIT_TEST(testChatControllerFullJIDBindingOnMessageAndNotReceipt);
     CPPUNIT_TEST(testChatControllerFullJIDBindingOnTypingAndNotActive);
-    CPPUNIT_TEST(testChatControllerPMPresenceHandling);
     CPPUNIT_TEST(testLocalMUCServiceDiscoveryResetOnDisconnect);
     CPPUNIT_TEST(testPresenceChangeDoesNotReplaceMUCInvite);
+    CPPUNIT_TEST(testNotSplittingMUCPresenceJoinLeaveLinesOnChatStateNotifications);
+
+    // MUC PM Tests
+    CPPUNIT_TEST(testChatControllerPMPresenceHandling);
+    CPPUNIT_TEST(testChatControllerMucPmUnavailableErrorHandling);
 
     // Highlighting tests
     CPPUNIT_TEST(testChatControllerHighlightingNotificationTesting);
     CPPUNIT_TEST(testChatControllerHighlightingNotificationDeduplicateSounds);
+    CPPUNIT_TEST(testChatControllerHighlightingNotificationKeyword);
+
     CPPUNIT_TEST(testChatControllerMeMessageHandling);
-	CPPUNIT_TEST(testRestartingMUCComponentCrash);
+    CPPUNIT_TEST(testRestartingMUCComponentCrash);
     CPPUNIT_TEST(testChatControllerMeMessageHandlingInMUC);
 
     // Carbons tests
     CPPUNIT_TEST(testCarbonsForwardedIncomingMessageToSecondResource);
     CPPUNIT_TEST(testCarbonsForwardedOutgoingMessageFromSecondResource);
+    CPPUNIT_TEST(testCarbonsForwardedIncomingDuplicates);
+
+    // Message correction tests
+    CPPUNIT_TEST(testChatControllerMessageCorrectionCorrectReplaceID);
+    CPPUNIT_TEST(testChatControllerMessageCorrectionIncorrectReplaceID);
+    CPPUNIT_TEST(testChatControllerMessageCorrectionReplaceBySameResource);
+    CPPUNIT_TEST(testChatControllerMessageCorrectionReplaceByOtherResource);
+    CPPUNIT_TEST(testMUCControllerMessageCorrectionNoIDMatchRequired);
+
+    // Chat window title tests
+    CPPUNIT_TEST(testImpromptuChatTitle);
+    CPPUNIT_TEST(testImpromptuChatWindowTitle);
+    CPPUNIT_TEST(testStandardMUCChatWindowTitle);
 
     CPPUNIT_TEST_SUITE_END();
 
 public:
     void setUp() {
         mocks_ = new MockRepository();
+        notifier_ = std::unique_ptr<DummyNotifier>(new DummyNotifier());
         jid_ = JID("test@test.com/resource");
         stanzaChannel_ = new DummyStanzaChannel();
         iqRouter_ = new IQRouter(stanzaChannel_);
@@ -125,10 +185,11 @@ public:
         ftManager_ = new DummyFileTransferManager();
         ftOverview_ = new FileTransferOverview(ftManager_);
         avatarManager_ = new NullAvatarManager();
+        eventNotifier_ = new EventNotifier(eventController_, notifier_.get(), avatarManager_, nickResolver_);
         wbSessionManager_ = new WhiteboardSessionManager(iqRouter_, stanzaChannel_, presenceOracle_, entityCapsProvider_);
         wbManager_ = new WhiteboardManager(whiteboardWindowFactory_, uiEventStream_, nickResolver_, wbSessionManager_);
         highlightManager_ = new HighlightManager(settings_);
-        highlightManager_->resetToDefaultRulesList();
+        highlightManager_->resetToDefaultConfiguration();
         handledHighlightActions_ = 0;
         soundsPlayed_.clear();
         highlightManager_->onHighlight.connect(boost::bind(&ChatsManagerTest::handleHighlightAction, this, _1));
@@ -138,7 +199,8 @@ public:
         vcardManager_ = new VCardManager(jid_, iqRouter_, vcardStorage_);
         mocks_->ExpectCall(chatListWindowFactory_, ChatListWindowFactory::createChatListWindow).With(uiEventStream_).Return(chatListWindow_);
         clientBlockListManager_ = new ClientBlockListManager(iqRouter_);
-        manager_ = new ChatsManager(jid_, stanzaChannel_, iqRouter_, eventController_, chatWindowFactory_, joinMUCWindowFactory_, nickResolver_, presenceOracle_, directedPresenceSender_, uiEventStream_, chatListWindowFactory_, true, nullptr, mucRegistry_, entityCapsProvider_, mucManager_, mucSearchWindowFactory_, profileSettings_, ftOverview_, xmppRoster_, false, settings_, nullptr, wbManager_, highlightManager_, clientBlockListManager_, emoticons_, vcardManager_);
+        timerFactory_ = new DummyTimerFactory();
+        manager_ = new ChatsManager(jid_, stanzaChannel_, iqRouter_, eventController_, chatWindowFactory_, joinMUCWindowFactory_, nickResolver_, presenceOracle_, directedPresenceSender_, uiEventStream_, chatListWindowFactory_, true, timerFactory_, mucRegistry_, entityCapsProvider_, mucManager_, mucSearchWindowFactory_, profileSettings_, ftOverview_, xmppRoster_, false, settings_, nullptr, wbManager_, highlightManager_, clientBlockListManager_, emoticons_, vcardManager_);
 
         manager_->setAvatarManager(avatarManager_);
     }
@@ -146,8 +208,10 @@ public:
     void tearDown() {
         delete highlightManager_;
         delete profileSettings_;
+        delete eventNotifier_;
         delete avatarManager_;
         delete manager_;
+        delete timerFactory_;
         delete clientBlockListManager_;
         delete vcardManager_;
         delete vcardStorage_;
@@ -190,7 +254,7 @@ public:
     void testSecondOpenWindowIncoming() {
         JID messageJID1("testling@test.com/resource1");
 
-        MockChatWindow* window1 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        MockChatWindow* window1 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID1, uiEventStream_).Return(window1);
 
         std::shared_ptr<Message> message1(new Message());
@@ -213,7 +277,7 @@ public:
     void testFirstOpenWindowOutgoing() {
         std::string messageJIDString("testling@test.com");
 
-        ChatWindow* window = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        ChatWindow* window = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(messageJIDString), uiEventStream_).Return(window);
 
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(messageJIDString)));
@@ -224,7 +288,7 @@ public:
         std::string bareJIDString("testling@test.com");
         std::string fullJIDString("testling@test.com/resource1");
 
-        MockChatWindow* window = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        MockChatWindow* window = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(bareJIDString), uiEventStream_).Return(window);
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(bareJIDString)));
 
@@ -238,12 +302,12 @@ public:
 
     void testSecondWindow() {
         std::string messageJIDString1("testling1@test.com");
-        ChatWindow* window1 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        ChatWindow* window1 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(messageJIDString1), uiEventStream_).Return(window1);
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(messageJIDString1)));
 
         std::string messageJIDString2("testling2@test.com");
-        ChatWindow* window2 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        ChatWindow* window2 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(messageJIDString2), uiEventStream_).Return(window2);
 
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(messageJIDString2)));
@@ -260,7 +324,7 @@ public:
         std::string fullJIDString1("testling@test.com/resource1");
         std::string fullJIDString2("testling@test.com/resource2");
 
-        MockChatWindow* window = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        MockChatWindow* window = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(bareJIDString), uiEventStream_).Return(window);
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(bareJIDString)));
 
@@ -297,18 +361,18 @@ public:
 
 
         std::string messageJIDString1("testling@test.com/1");
-        ChatWindow* window1 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        ChatWindow* window1 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(messageJIDString1), uiEventStream_).Return(window1);
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(messageJIDString1)));
 
         std::string messageJIDString2("testling@test.com/2");
-        ChatWindow* window2 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        ChatWindow* window2 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(messageJIDString2), uiEventStream_).Return(window2);
 
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(messageJIDString2)));
 
         std::string messageJIDString3("testling@test.com/3");
-        ChatWindow* window3 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        ChatWindow* window3 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(JID(messageJIDString3), uiEventStream_).Return(window3);
 
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(JID(messageJIDString3)));
@@ -331,7 +395,7 @@ public:
     void testNoDuplicateUnbind() {
         JID messageJID1("testling@test.com/resource1");
 
-        MockChatWindow* window1 = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        MockChatWindow* window1 = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID1, uiEventStream_).Return(window1);
 
         std::shared_ptr<Message> message1(new Message());
@@ -407,7 +471,7 @@ public:
     void testChatControllerPresenceAccessUpdatedOnAddToRoster() {
         JID messageJID("testling@test.com/resource1");
 
-        MockChatWindow* window = new MockChatWindow();//mocks_->InterfaceMock<ChatWindow>();
+        MockChatWindow* window = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
         settings_->storeSetting(SettingConstants::REQUEST_DELIVERYRECEIPTS, true);
 
@@ -455,7 +519,7 @@ public:
 
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(sender));
 
-        foreach(const JID& senderJID, senderResource) {
+        for (const auto& senderJID : senderResource) {
             // The sender supports delivery receipts.
             DiscoInfo::ref disco = std::make_shared<DiscoInfo>();
             disco->addFeature(DiscoInfo::MessageDeliveryReceiptsFeature);
@@ -478,7 +542,7 @@ public:
         CPPUNIT_ASSERT(stanzaChannel_->getStanzaAtIndex<Message>(1)->getPayload<DeliveryReceiptRequest>());
 
         // Two resources respond with message receipts.
-        foreach(const JID& senderJID, senderResource) {
+        for (const auto& senderJID : senderResource) {
             Message::ref receiptReply = std::make_shared<Message>();
             receiptReply->setFrom(senderJID);
             receiptReply->setTo(ownJID);
@@ -497,7 +561,7 @@ public:
         CPPUNIT_ASSERT(stanzaChannel_->getStanzaAtIndex<Message>(1)->getPayload<DeliveryReceiptRequest>());
 
         // Two resources respond with message receipts.
-        foreach(const JID& senderJID, senderResource) {
+        for (const auto& senderJID : senderResource) {
             Message::ref receiptReply = std::make_shared<Message>();
             receiptReply->setFrom(senderJID);
             receiptReply->setTo(ownJID);
@@ -570,7 +634,7 @@ public:
 
         uiEventStream_->send(std::make_shared<RequestChatUIEvent>(sender));
 
-        foreach(const JID& senderJID, senderResource) {
+        for (const auto& senderJID : senderResource) {
             // The sender supports delivery receipts.
             DiscoInfo::ref disco = std::make_shared<DiscoInfo>();
             disco->addFeature(DiscoInfo::MessageDeliveryReceiptsFeature);
@@ -593,7 +657,7 @@ public:
         CPPUNIT_ASSERT(stanzaChannel_->getStanzaAtIndex<Message>(1)->getPayload<DeliveryReceiptRequest>());
 
         // Two resources respond with message receipts.
-        foreach(const JID& senderJID, senderResource) {
+        for (const auto& senderJID : senderResource) {
             Message::ref reply = std::make_shared<Message>();
             reply->setFrom(senderJID);
             reply->setTo(ownJID);
@@ -612,7 +676,7 @@ public:
         CPPUNIT_ASSERT(stanzaChannel_->getStanzaAtIndex<Message>(1)->getPayload<DeliveryReceiptRequest>());
 
         // Two resources respond with message receipts.
-        foreach(const JID& senderJID, senderResource) {
+        for (const auto& senderJID : senderResource) {
             Message::ref receiptReply = std::make_shared<Message>();
             receiptReply->setFrom(senderJID);
             receiptReply->setTo(ownJID);
@@ -685,7 +749,51 @@ public:
         presence->setShow(StatusShow::None);
         presence->setType(Presence::Unavailable);
         stanzaChannel_->onPresenceReceived(presence);
-        CPPUNIT_ASSERT_EQUAL(std::string("participantA has gone offline."), MockChatWindow::bodyFromMessage(window->lastReplacedMessage_));
+        CPPUNIT_ASSERT_EQUAL(std::string("participantA has gone offline."), MockChatWindow::bodyFromMessage(window->lastReplacedLastMessage_));
+    }
+
+    void testChatControllerMucPmUnavailableErrorHandling() {
+        auto mucJID = JID("test@rooms.test.com");
+        auto participantA = mucJID.withResource("participantA");
+        auto participantB = mucJID.withResource("participantB");
+
+        auto mucWindow = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(mucJID, uiEventStream_).Return(mucWindow);
+        uiEventStream_->send(std::make_shared<JoinMUCUIEvent>(mucJID, participantB.getResource()));
+        CPPUNIT_ASSERT_EQUAL(true, mucWindow->mucType_.is_initialized());
+
+        auto window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(participantA, uiEventStream_).Return(window);
+        uiEventStream_->send(std::make_shared<RequestChatUIEvent>(participantA));
+        CPPUNIT_ASSERT_EQUAL(false, window->mucType_.is_initialized());
+
+        Presence::ref presence = Presence::create();
+        presence->setFrom(participantA);
+        presence->setShow(StatusShow::Online);
+        stanzaChannel_->onPresenceReceived(presence);
+        CPPUNIT_ASSERT_EQUAL(std::string("participantA has become available."), MockChatWindow::bodyFromMessage(window->lastAddedPresence_));
+
+        // send message to participantA
+        auto messageBody = std::string("message body to send");
+        window->onSendMessageRequest(messageBody, false);
+        auto sendMessageStanza = stanzaChannel_->getStanzaAtIndex<Message>(2);
+        CPPUNIT_ASSERT_EQUAL(messageBody, *sendMessageStanza->getBody());
+
+        // receive reply with error
+        auto messageErrorReply = std::make_shared<Message>();
+        messageErrorReply->setID(stanzaChannel_->getNewIQID());
+        messageErrorReply->setType(Message::Error);
+        messageErrorReply->setFrom(participantA);
+        messageErrorReply->setTo(jid_);
+        messageErrorReply->addPayload(std::make_shared<ErrorPayload>(ErrorPayload::ItemNotFound, ErrorPayload::Cancel, "Recipient not in room"));
+
+        auto lastMUCWindowErrorMessageBeforeError = MockChatWindow::bodyFromMessage(mucWindow->lastAddedErrorMessage_);
+        manager_->handleIncomingMessage(messageErrorReply);
+
+        // assert that error is not routed to MUC window
+        CPPUNIT_ASSERT_EQUAL(lastMUCWindowErrorMessageBeforeError,  MockChatWindow::bodyFromMessage(mucWindow->lastAddedErrorMessage_));
+        // assert that error is routed to PM
+        CPPUNIT_ASSERT_EQUAL(std::string("This user could not be found in the room."), MockChatWindow::bodyFromMessage(window->lastAddedErrorMessage_));
     }
 
     void testLocalMUCServiceDiscoveryResetOnDisconnect() {
@@ -739,24 +847,17 @@ public:
     }
 
     void testChatControllerHighlightingNotificationTesting() {
-        HighlightRule keywordRuleA;
-        keywordRuleA.setMatchChat(true);
-        std::vector<std::string> keywordsA;
-        keywordsA.push_back("Romeo");
-        keywordRuleA.setKeywords(keywordsA);
-        keywordRuleA.getAction().setTextColor("yellow");
-        keywordRuleA.getAction().setPlaySound(true);
-        highlightManager_->insertRule(0, keywordRuleA);
+        HighlightConfiguration::KeywordHightlight keywordRuleA;
+        keywordRuleA.keyword = "Romeo";
+        keywordRuleA.action.setFrontColor(boost::optional<std::string>("yellow"));
+        keywordRuleA.action.setSoundFilePath(boost::optional<std::string>(""));
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordRuleA);
 
-        HighlightRule keywordRuleB;
-        keywordRuleB.setMatchChat(true);
-        std::vector<std::string> keywordsB;
-        keywordsB.push_back("Juliet");
-        keywordRuleB.setKeywords(keywordsB);
-        keywordRuleB.getAction().setTextColor("green");
-        keywordRuleB.getAction().setPlaySound(true);
-        keywordRuleB.getAction().setSoundFile("/tmp/someotherfile.wav");
-        highlightManager_->insertRule(0, keywordRuleB);
+        HighlightConfiguration::KeywordHightlight keywordRuleB;
+        keywordRuleB.keyword = "Juliet";
+        keywordRuleB.action.setFrontColor(boost::optional<std::string>("green"));
+        keywordRuleB.action.setSoundFilePath(boost::optional<std::string>("/tmp/someotherfile.wav"));
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordRuleB);
 
         JID messageJID = JID("testling@test.com");
 
@@ -770,28 +871,23 @@ public:
         manager_->handleIncomingMessage(message);
 
         CPPUNIT_ASSERT_EQUAL(2, handledHighlightActions_);
-        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleA.getAction().getSoundFile()) != soundsPlayed_.end());
-        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleB.getAction().getSoundFile()) != soundsPlayed_.end());
+        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleA.action.getSoundFilePath().get_value_or("")) != soundsPlayed_.end());
+        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleB.action.getSoundFilePath().get_value_or("")) != soundsPlayed_.end());
+        CPPUNIT_ASSERT_EQUAL(size_t(1), notifier_->notifications.size());
     }
 
     void testChatControllerHighlightingNotificationDeduplicateSounds() {
-        HighlightRule keywordRuleA;
-        keywordRuleA.setMatchChat(true);
-        std::vector<std::string> keywordsA;
-        keywordsA.push_back("Romeo");
-        keywordRuleA.setKeywords(keywordsA);
-        keywordRuleA.getAction().setTextColor("yellow");
-        keywordRuleA.getAction().setPlaySound(true);
-        highlightManager_->insertRule(0, keywordRuleA);
+        auto keywordRuleA = HighlightConfiguration::KeywordHightlight();
+        keywordRuleA.keyword = "Romeo";
+        keywordRuleA.action.setFrontColor(boost::optional<std::string>("yellow"));
+        keywordRuleA.action.setSoundFilePath(boost::optional<std::string>(""));
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordRuleA);
 
-        HighlightRule keywordRuleB;
-        keywordRuleB.setMatchChat(true);
-        std::vector<std::string> keywordsB;
-        keywordsB.push_back("Juliet");
-        keywordRuleB.setKeywords(keywordsB);
-        keywordRuleB.getAction().setTextColor("green");
-        keywordRuleB.getAction().setPlaySound(true);
-        highlightManager_->insertRule(0, keywordRuleB);
+        auto keywordRuleB = HighlightConfiguration::KeywordHightlight();
+        keywordRuleB.keyword = "Juliet";
+        keywordRuleB.action.setFrontColor(boost::optional<std::string>("green"));
+        keywordRuleB.action.setSoundFilePath(boost::optional<std::string>(""));
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordRuleB);
 
         JID messageJID = JID("testling@test.com");
 
@@ -805,8 +901,31 @@ public:
         manager_->handleIncomingMessage(message);
 
         CPPUNIT_ASSERT_EQUAL(1, handledHighlightActions_);
-        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleA.getAction().getSoundFile()) != soundsPlayed_.end());
-        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleB.getAction().getSoundFile()) != soundsPlayed_.end());
+        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleA.action.getSoundFilePath().get_value_or("")) != soundsPlayed_.end());
+        CPPUNIT_ASSERT(soundsPlayed_.find(keywordRuleB.action.getSoundFilePath().get_value_or("")) != soundsPlayed_.end());
+        CPPUNIT_ASSERT_EQUAL(size_t(1), notifier_->notifications.size());
+    }
+
+    void testChatControllerHighlightingNotificationKeyword() {
+        auto keywordRuleA = HighlightConfiguration::KeywordHightlight();
+        keywordRuleA.keyword = "Swift";
+        keywordRuleA.action.setFrontColor(boost::optional<std::string>("yellow"));
+        keywordRuleA.action.setSoundFilePath(boost::optional<std::string>(""));
+        keywordRuleA.action.setSystemNotificationEnabled(true);
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordRuleA);
+
+        JID messageJID = JID("testling@test.com");
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
+
+        std::shared_ptr<Message> message(new Message());
+        message->setFrom(messageJID);
+        std::string body("Let's see if the Swift highlight kicks off a system notification.");
+        message->setBody(body);
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(size_t(2), notifier_->notifications.size());
     }
 
     void testChatControllerMeMessageHandling() {
@@ -875,12 +994,19 @@ public:
         JID mucJID("mucroom@rooms.test.com");
         std::string nickname = "toodles";
 
+        //highlightManager_->resetToDefaultConfiguration();
+
         // add highlight rule for 'foo'
-        HighlightRule fooHighlight;
-        fooHighlight.setKeywords({"foo"});
-        fooHighlight.setMatchMUC(true);
-        fooHighlight.getAction().setTextBackground("green");
-        highlightManager_->insertRule(0, fooHighlight);
+        HighlightConfiguration::KeywordHightlight keywordHighlight;
+        keywordHighlight.keyword = "foo";
+        keywordHighlight.action.setBackColor(boost::optional<std::string>("green"));
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordHighlight);
+
+        HighlightConfiguration::KeywordHightlight keywordHighlightNotification;
+        keywordHighlightNotification.keyword = "Swift";
+        keywordHighlightNotification.action.setBackColor(boost::optional<std::string>("green"));
+        keywordHighlightNotification.action.setSystemNotificationEnabled(true);
+        highlightManager_->getConfiguration()->keywordHighlights.push_back(keywordHighlightNotification);
 
         MockChatWindow* window = new MockChatWindow();
         mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(mucJID, uiEventStream_).Return(window);
@@ -935,6 +1061,18 @@ public:
             manager_->handleIncomingMessage(mucMirrored);
         }
         CPPUNIT_ASSERT_EQUAL(std::string("says hello with a test message with foo and foo"), window->bodyFromMessage(window->lastAddedAction_));
+
+        window->resetLastMessages();
+        {
+            Message::ref keywordMessage = std::make_shared<Message>();
+            keywordMessage->setFrom(mucJID.withResource("someOtherDifferentNickname"));
+            keywordMessage->setTo(jid_);
+            keywordMessage->setType(Message::Groupchat);
+            keywordMessage->setBody("Let's mention Swift and see what happens.");
+            manager_->handleIncomingMessage(keywordMessage);
+        }
+        CPPUNIT_ASSERT_EQUAL(std::string("Let's mention Swift and see what happens."), window->bodyFromMessage(window->lastAddedMessage_));
+        CPPUNIT_ASSERT_EQUAL(size_t(1), notifier_->notifications.size());
     }
 
     void testPresenceChangeDoesNotReplaceMUCInvite() {
@@ -976,8 +1114,75 @@ public:
         CPPUNIT_ASSERT_EQUAL(JID("room@muc.service.com"), window->lastMUCInvitationJID_);
 
         stanzaChannel_->onPresenceReceived(generateIncomingPresence(Presence::Unavailable));
-        CPPUNIT_ASSERT_EQUAL(std::string(""), MockChatWindow::bodyFromMessage(window->lastReplacedMessage_));
+        CPPUNIT_ASSERT_EQUAL(std::string(""), MockChatWindow::bodyFromMessage(window->lastReplacedLastMessage_));
         CPPUNIT_ASSERT_EQUAL(std::string("testling@test.com has gone offline."), MockChatWindow::bodyFromMessage(window->lastAddedPresence_));
+    }
+
+    void testNotSplittingMUCPresenceJoinLeaveLinesOnChatStateNotifications() {
+        JID mucJID("mucroom@rooms.test.com");
+        std::string nickname = "toodles";
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(mucJID, uiEventStream_).Return(window);
+
+        uiEventStream_->send(std::make_shared<JoinMUCUIEvent>(mucJID, boost::optional<std::string>(), nickname));
+
+        auto genRemoteMUCPresence = [=]() {
+            auto presence = Presence::create();
+            presence->setFrom(mucJID.withResource(nickname));
+            presence->setTo(jid_);
+            return presence;
+        };
+
+        {
+            auto presence = genRemoteMUCPresence();
+            auto userPayload = std::make_shared<MUCUserPayload>();
+            userPayload->addStatusCode(110);
+            userPayload->addItem(MUCItem(MUCOccupant::Owner, jid_, MUCOccupant::Moderator));
+            presence->addPayload(userPayload);
+            stanzaChannel_->onPresenceReceived(presence);
+        }
+
+        {
+            auto presence = genRemoteMUCPresence();
+            presence->setFrom(mucJID.withResource("someDifferentNickname"));
+            auto userPayload = std::make_shared<MUCUserPayload>();
+            presence->addPayload(userPayload);
+            stanzaChannel_->onPresenceReceived(presence);
+        }
+        CPPUNIT_ASSERT_EQUAL(std::string("someDifferentNickname has entered the room."), window->bodyFromMessage(window->lastAddedPresence_));
+        CPPUNIT_ASSERT_EQUAL(std::string(), window->bodyFromMessage(window->lastReplacedLastMessage_));
+        window->resetLastMessages();
+
+        {
+            auto presence = genRemoteMUCPresence();
+            presence->setFrom(mucJID.withResource("Romeo"));
+            auto userPayload = std::make_shared<MUCUserPayload>();
+            presence->addPayload(userPayload);
+            stanzaChannel_->onPresenceReceived(presence);
+        }
+        CPPUNIT_ASSERT_EQUAL(std::string(), window->bodyFromMessage(window->lastAddedPresence_));
+        CPPUNIT_ASSERT_EQUAL(std::string("someDifferentNickname and Romeo have entered the room"), window->bodyFromMessage(window->lastReplacedLastMessage_));
+        window->resetLastMessages();
+
+        {
+            auto message = std::make_shared<Message>();
+            message->setFrom(mucJID.withResource("Romeo"));
+            message->setTo(mucJID);
+            message->setType(Message::Groupchat);
+            message->addPayload(std::make_shared<ChatState>(ChatState::Composing));
+            manager_->handleIncomingMessage(message);
+        }
+
+        {
+            auto presence = genRemoteMUCPresence();
+            presence->setFrom(mucJID.withResource("Juliet"));
+            auto userPayload = std::make_shared<MUCUserPayload>();
+            presence->addPayload(userPayload);
+            stanzaChannel_->onPresenceReceived(presence);
+        }
+        CPPUNIT_ASSERT_EQUAL(std::string(), window->bodyFromMessage(window->lastAddedPresence_));
+        CPPUNIT_ASSERT_EQUAL(std::string("someDifferentNickname, Romeo and Juliet have entered the room"), window->bodyFromMessage(window->lastReplacedLastMessage_));
     }
 
     template <typename CarbonsType>
@@ -1078,6 +1283,321 @@ public:
         }
     }
 
+    void testCarbonsForwardedIncomingDuplicates() {
+        JID messageJID("testling@test.com/resource1");
+        JID jid2 = jid_.toBare().withResource("someOtherResource");
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
+
+        std::shared_ptr<Message> message(new Message());
+        message->setFrom(messageJID);
+        std::string body("This is a legible message. >HEH@)oeueu");
+        message->setBody(body);
+        manager_->handleIncomingMessage(message);
+        CPPUNIT_ASSERT_EQUAL(body, MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+
+        // incoming carbons message from another resource and duplicate of it
+        {
+            auto originalMessage = std::make_shared<Message>();
+            originalMessage->setFrom(messageJID);
+            originalMessage->setTo(jid2);
+            originalMessage->setID("BDD82F0B-2523-48BF-B8CA-17B23A314BC2");
+            originalMessage->setType(Message::Chat);
+            std::string forwardedBody = "Some further text.";
+            originalMessage->setBody(forwardedBody);
+
+            auto messageWrapper = createCarbonsMessage(std::make_shared<CarbonsReceived>(), originalMessage);
+
+            manager_->handleIncomingMessage(messageWrapper);
+
+            CPPUNIT_ASSERT_EQUAL(forwardedBody, MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+            CPPUNIT_ASSERT_EQUAL(false, window->lastAddedMessageSenderIsSelf_);
+            window->resetLastMessages();
+
+            messageWrapper = createCarbonsMessage(std::make_shared<CarbonsReceived>(), originalMessage);
+            manager_->handleIncomingMessage(messageWrapper);
+            CPPUNIT_ASSERT_EQUAL(std::string(), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+            CPPUNIT_ASSERT_EQUAL(false, window->lastAddedMessageSenderIsSelf_);
+        }
+    }
+
+    /**
+     * This test case ensures correct handling of the ideal case where the replace
+     * message refers to a message with a known ID. This results in the last
+     * message being replaced.
+     */
+    void testChatControllerMessageCorrectionCorrectReplaceID() {
+        JID messageJID("testling@test.com/resource1");
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
+
+        auto message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text before edit");
+        message->setID("someID");
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text before edit"), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+
+        message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text after edit");
+        message->addPayload(std::make_shared<Replace>("someID"));
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text before edit"), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+        CPPUNIT_ASSERT_EQUAL(std::string("text after edit"), MockChatWindow::bodyFromMessage(window->lastReplacedMessage_));
+    }
+
+    /**
+     * This test case ensures correct handling of the case where the replace
+     * message refers to a message with a unknown ID. The replace message should
+     * be treated like a non-repalce message in this case, with no replacement
+     * occuring.
+     */
+    void testChatControllerMessageCorrectionIncorrectReplaceID() {
+        JID messageJID("testling@test.com/resource1");
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
+
+        auto message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text before edit");
+        message->setID("someID");
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text before edit"), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+
+        message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text after failed edit");
+        message->addPayload(std::make_shared<Replace>("wrongID"));
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text after failed edit"), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+        CPPUNIT_ASSERT_EQUAL(std::string(""), MockChatWindow::bodyFromMessage(window->lastReplacedMessage_));
+    }
+
+    void testChatControllerMessageCorrectionReplaceBySameResource() {
+        JID messageJID("testling@test.com/resource1");
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
+
+        auto message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text before edit");
+        message->setID("someID");
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text before edit"), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+
+        message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text after edit");
+        message->addPayload(std::make_shared<Replace>("someID"));
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text after edit"), MockChatWindow::bodyFromMessage(window->lastReplacedMessage_));
+    }
+
+    void testChatControllerMessageCorrectionReplaceByOtherResource() {
+        JID messageJID("testling@test.com/resource1");
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(messageJID, uiEventStream_).Return(window);
+
+        auto message = std::make_shared<Message>();
+        message->setFrom(messageJID);
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text before edit");
+        message->setID("someID");
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text before edit"), MockChatWindow::bodyFromMessage(window->lastAddedMessage_));
+
+        message = std::make_shared<Message>();
+        message->setFrom(messageJID.toBare().withResource("resource2"));
+        message->setTo(jid_);
+        message->setType(Message::Chat);
+        message->setBody("text after edit");
+        message->addPayload(std::make_shared<Replace>("someID"));
+        manager_->handleIncomingMessage(message);
+
+        CPPUNIT_ASSERT_EQUAL(std::string("text after edit"), MockChatWindow::bodyFromMessage(window->lastReplacedMessage_));
+    }
+
+    void testMUCControllerMessageCorrectionNoIDMatchRequired() {
+        JID mucJID("SomeMUCRoom@test.com");
+        manager_->setOnline(true);
+
+        // Open chat window to a sender.
+        MockChatWindow* window = new MockChatWindow();
+
+        std::vector<JID> jids;
+        jids.emplace_back("foo@test.com");
+        jids.emplace_back("bar@test.com");
+
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(mucJID, uiEventStream_).Return(window);
+
+        auto nickname = std::string("SomeNickName");
+        // Join room
+        {
+            auto joinRoomEvent = std::make_shared<JoinMUCUIEvent>(mucJID, boost::optional<std::string>(), nickname);
+            uiEventStream_->send(joinRoomEvent);
+        }
+
+        auto genRemoteMUCPresence = [=]() {
+            auto presence = Presence::create();
+            presence->setFrom(mucJID.withResource(nickname));
+            presence->setTo(jid_);
+            return presence;
+        };
+
+        {
+            auto presence = genRemoteMUCPresence();
+            auto userPayload = std::make_shared<MUCUserPayload>();
+            userPayload->addStatusCode(110);
+            userPayload->addItem(MUCItem(MUCOccupant::Owner, jid_, MUCOccupant::Moderator));
+            presence->addPayload(userPayload);
+            stanzaChannel_->onPresenceReceived(presence);
+        }
+
+        {
+            auto presence = genRemoteMUCPresence();
+            presence->setFrom(mucJID.withResource("someDifferentNickname"));
+            auto userPayload = std::make_shared<MUCUserPayload>();
+            userPayload->addItem(MUCItem(MUCOccupant::Member, JID("foo@bar.com"), MUCOccupant::Moderator));
+            presence->addPayload(userPayload);
+            stanzaChannel_->onPresenceReceived(presence);
+        }
+
+        {
+            Message::ref mucMirrored = std::make_shared<Message>();
+            mucMirrored->setFrom(mucJID.withResource(nickname));
+            mucMirrored->setTo(jid_);
+            mucMirrored->setType(Message::Groupchat);
+            mucMirrored->setID("fooBlaID_1");
+            mucMirrored->setBody("Some misssssspelled message.");
+            manager_->handleIncomingMessage(mucMirrored);
+        }
+        CPPUNIT_ASSERT_EQUAL(std::string("Some misssssspelled message."), window->bodyFromMessage(window->lastAddedMessage_));
+
+        // Replace message with non-matching ID
+        {
+            Message::ref mucMirrored = std::make_shared<Message>();
+            mucMirrored->setFrom(mucJID.withResource(nickname));
+            mucMirrored->setTo(jid_);
+            mucMirrored->setType(Message::Groupchat);
+            mucMirrored->setID("fooBlaID_3");
+            mucMirrored->setBody("Some correctly spelled message.");
+            mucMirrored->addPayload(std::make_shared<Replace>("fooBlaID_2"));
+            manager_->handleIncomingMessage(mucMirrored);
+        }
+        CPPUNIT_ASSERT_EQUAL(std::string("Some correctly spelled message."), window->bodyFromMessage(window->lastReplacedMessage_));
+    }
+
+    void impromptuChatSetup(MockChatWindow* window) {
+        stanzaChannel_->uniqueIDs_ = true;
+        JID mucJID("795B7BBE-9099-4A0D-81BA-C816F78E275C@test.com");
+        manager_->setOnline(true);
+
+        std::shared_ptr<IQ> infoRequest = std::dynamic_pointer_cast<IQ>(stanzaChannel_->sentStanzas[1]);
+        CPPUNIT_ASSERT(infoRequest);
+
+        std::shared_ptr<IQ> infoResponse = IQ::createResult(infoRequest->getFrom(), infoRequest->getTo(), infoRequest->getID());
+
+        DiscoInfo info;
+        info.addIdentity(DiscoInfo::Identity("Shakespearean Chat Service", "conference", "text"));
+        info.addFeature("http://jabber.org/protocol/muc");
+        infoResponse->addPayload(std::make_shared<DiscoInfo>(info));
+        stanzaChannel_->onIQReceived(infoResponse);
+
+        std::vector<JID> jids;
+        jids.emplace_back("foo@test.com");
+        jids.emplace_back("bar@test.com");
+
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(mucJID, uiEventStream_).Return(window);
+        uiEventStream_->send(std::make_shared<CreateImpromptuMUCUIEvent>(jids, mucJID, ""));
+        CPPUNIT_ASSERT_EQUAL(std::string("bar@test.com, foo@test.com"), manager_->getRecentChats()[0].getTitle());
+
+        auto mucJoinPresence = std::dynamic_pointer_cast<Presence>(stanzaChannel_->sentStanzas[2]);
+        CPPUNIT_ASSERT(mucJoinPresence);
+
+        // MUC presence reply
+        auto mucResponse = Presence::create();
+        mucResponse->setTo(jid_);
+        mucResponse->setFrom(mucJoinPresence->getTo());
+        mucResponse->addPayload([]() {
+            auto mucUser = std::make_shared<MUCUserPayload>();
+            mucUser->addItem(MUCItem(MUCOccupant::Member, MUCOccupant::Participant));
+            mucUser->addStatusCode(MUCUserPayload::StatusCode(110));
+            mucUser->addStatusCode(MUCUserPayload::StatusCode(210));
+            return mucUser;
+        }());
+        stanzaChannel_->onPresenceReceived(mucResponse);
+
+        // Before people join the impromptu room, the title is based on names coming from Roster
+        CPPUNIT_ASSERT_EQUAL(std::string("bar@test.com, foo@test.com"), manager_->getRecentChats()[0].getTitle());
+
+        auto mucParticipantJoined = [&](const JID& jid) {
+            auto participantJoinedPresence = Presence::create();
+            participantJoinedPresence->setTo(jid_);
+            participantJoinedPresence->setFrom(mucJID.withResource(jid.toString()));
+            auto mucUser = std::make_shared<MUCUserPayload>();
+            mucUser->addItem(MUCItem(MUCOccupant::Member, MUCOccupant::Participant));
+            participantJoinedPresence->addPayload(mucUser);
+            return participantJoinedPresence;
+        };
+
+        for (const auto& participantJID : jids) {
+            stanzaChannel_->onPresenceReceived(mucParticipantJoined(participantJID));
+        }
+    }
+
+    void testImpromptuChatTitle() {
+        // Open a new chat window to a sender.
+        MockChatWindow* window = new MockChatWindow();
+        impromptuChatSetup(window);
+        // After people joined, the title is the list of participant nicknames or names coming from Roster (if nicknames are unavailable)
+        CPPUNIT_ASSERT_EQUAL(std::string("bar@test.com, foo@test.com"), manager_->getRecentChats()[0].getTitle());
+    }
+
+    void testImpromptuChatWindowTitle() {
+        // Open a new chat window to a sender.
+        MockChatWindow* window = new MockChatWindow();
+        impromptuChatSetup(window);
+        // After people joined, the title of chat window is combined of participant nicknames or names coming from Roster (if nicknames are unavailable)
+        CPPUNIT_ASSERT_EQUAL(std::string("bar@test.com, foo@test.com"), window->name_);
+    }
+
+    void testStandardMUCChatWindowTitle() {
+        JID mucJID("mucroom@rooms.test.com");
+        std::string nickname = "toodles";
+
+        MockChatWindow* window = new MockChatWindow();
+        mocks_->ExpectCall(chatWindowFactory_, ChatWindowFactory::createChatWindow).With(mucJID, uiEventStream_).Return(window);
+
+        uiEventStream_->send(std::make_shared<JoinMUCUIEvent>(mucJID, boost::optional<std::string>(), nickname));
+        CPPUNIT_ASSERT_EQUAL(std::string("mucroom"), window->name_);
+    }
+
 private:
     std::shared_ptr<Message> makeDeliveryReceiptTestMessage(const JID& from, const std::string& id) {
         std::shared_ptr<Message> message = std::make_shared<Message>();
@@ -1094,13 +1614,14 @@ private:
 
     void handleHighlightAction(const HighlightAction& action) {
         handledHighlightActions_++;
-        if (action.playSound()) {
-            soundsPlayed_.insert(action.getSoundFile());
+        if (action.getSoundFilePath()) {
+            soundsPlayed_.insert(action.getSoundFilePath().get_value_or(""));
         }
     }
 
 private:
     JID jid_;
+    std::unique_ptr<DummyNotifier> notifier_;
     ChatsManager* manager_;
     DummyStanzaChannel* stanzaChannel_;
     IQRouter* iqRouter_;
@@ -1110,6 +1631,7 @@ private:
     NickResolver* nickResolver_;
     PresenceOracle* presenceOracle_;
     AvatarManager* avatarManager_;
+    EventNotifier* eventNotifier_;
     std::shared_ptr<DiscoInfo> serverDiscoInfo_;
     XMPPRosterImpl* xmppRoster_;
     PresenceSender* presenceSender_;
@@ -1137,6 +1659,8 @@ private:
     std::map<std::string, std::string> emoticons_;
     int handledHighlightActions_;
     std::set<std::string> soundsPlayed_;
+    DummyTimerFactory* timerFactory_;
+
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(ChatsManagerTest);

@@ -9,7 +9,6 @@
 #include <QPointer>
 #include <QTextEdit>
 
-#include <Swift/Controllers/SettingConstants.h>
 #include <Swift/Controllers/Settings/SettingsProvider.h>
 
 #include <SwifTools/SpellParser.h>
@@ -27,12 +26,16 @@ namespace Swift {
         virtual ~QtTextEdit();
         virtual QSize sizeHint() const;
 
+        void setEmphasiseFocus(bool emphasise);
+        void setCorrectionHighlight(bool coorectionHighlight);
+
     signals:
         void wordCorrected(QString& word);
         void returnPressed();
         void unhandledKeyPressEvent(QKeyEvent* event);
         void receivedFocus();
         void lostFocus();
+        void itemDropped(QDropEvent* event);
 
     public slots:
         void handleSettingChanged(const std::string& settings);
@@ -42,6 +45,7 @@ namespace Swift {
         virtual void focusInEvent(QFocusEvent* event);
         virtual void focusOutEvent(QFocusEvent* event);
         virtual void contextMenuEvent(QContextMenuEvent* event);
+        virtual void dropEvent(QDropEvent* event);
 
     private slots:
         void handleTextChanged();
@@ -52,6 +56,7 @@ namespace Swift {
         void setUpSpellChecker();
         void spellCheckerSettingsWindow();
         PositionPair getWordFromCursor(int cursorPosition);
+        void updateStyleSheet();
 
     private:
         SpellChecker* checker_;
@@ -59,5 +64,7 @@ namespace Swift {
         std::vector<QAction*> replaceWordActions_;
         SettingsProvider* settings_;
         QPointer<QtSpellCheckerWindow> spellCheckerWindow_;
+        bool emphasiseFocus_ = false;
+        bool correctionHighlight_ = false;
     };
 }

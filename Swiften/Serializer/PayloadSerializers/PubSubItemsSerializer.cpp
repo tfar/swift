@@ -4,17 +4,16 @@
  * See the COPYING file for more information.
  */
 
-#pragma clang diagnostic ignored "-Wunused-private-field"
-
 #include <Swiften/Serializer/PayloadSerializers/PubSubItemsSerializer.h>
-#include <Swiften/Serializer/XML/XMLElement.h>
-#include <boost/lexical_cast.hpp>
+
 #include <memory>
 
-#include <Swiften/Serializer/PayloadSerializerCollection.h>
-#include <Swiften/Base/foreach.h>
+#include <boost/lexical_cast.hpp>
+
 #include <Swiften/Base/Log.h>
+#include <Swiften/Serializer/PayloadSerializerCollection.h>
 #include <Swiften/Serializer/PayloadSerializers/PubSubItemSerializer.h>
+#include <Swiften/Serializer/XML/XMLElement.h>
 #include <Swiften/Serializer/XML/XMLRawTextNode.h>
 
 using namespace Swift;
@@ -34,7 +33,7 @@ std::string PubSubItemsSerializer::serializePayload(std::shared_ptr<PubSubItems>
         SWIFT_LOG(warning) << "Serializing PubSubItems with empty node attribute";
     }
     element.setAttribute("node", payload->getNode());
-    foreach(std::shared_ptr<PubSubItem> item, payload->getItems()) {
+    for (const auto& item : payload->getItems()) {
         element.addNode(std::make_shared<XMLRawTextNode>(PubSubItemSerializer(serializers).serialize(item)));
     }
     if (payload->getMaximumItems()) {

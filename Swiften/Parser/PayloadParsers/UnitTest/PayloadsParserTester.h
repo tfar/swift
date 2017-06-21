@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <cassert>
+
 #include <Swiften/Elements/Payload.h>
 #include <Swiften/Parser/PayloadParser.h>
 #include <Swiften/Parser/PayloadParsers/FullPayloadParserFactoryCollection.h>
@@ -18,10 +20,6 @@ namespace Swift {
         public:
             PayloadsParserTester() : level(0) {
                 xmlParser = PlatformXMLParserFactory().createXMLParser(this);
-            }
-
-            ~PayloadsParserTester() {
-                delete xmlParser;
             }
 
             bool parse(const std::string& data) {
@@ -58,7 +56,7 @@ namespace Swift {
             }
 
         private:
-            XMLParser* xmlParser;
+            std::unique_ptr<XMLParser> xmlParser;
             FullPayloadParserFactoryCollection factories;
             std::shared_ptr<PayloadParser> payloadParser;
             int level;

@@ -9,8 +9,8 @@
 #include <sstream>
 #include <typeinfo>
 
+#include <Swiften/Base/String.h>
 #include <Swiften/Base/Log.h>
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Elements/Stanza.h>
 #include <Swiften/Serializer/PayloadSerializer.h>
 #include <Swiften/Serializer/PayloadSerializerCollection.h>
@@ -47,7 +47,7 @@ SafeByteArray StanzaSerializer::serialize(std::shared_ptr<ToplevelElement> eleme
     setStanzaSpecificAttributes(stanza, stanzaElement);
 
     std::string serializedPayloads;
-    foreach (const std::shared_ptr<Payload>& payload, stanza->getPayloads()) {
+    for (const auto& payload : stanza->getPayloads()) {
         PayloadSerializer* serializer = payloadSerializers_->getPayloadSerializer(payload);
         if (serializer) {
             serializedPayloads += serializer->serialize(payload);
@@ -56,6 +56,7 @@ SafeByteArray StanzaSerializer::serialize(std::shared_ptr<ToplevelElement> eleme
             SWIFT_LOG(warning) << "Could not find serializer for " << typeid(*(payload.get())).name() << std::endl;
         }
     }
+    serializedPayloads = String::sanitizeXMPPString(serializedPayloads);
     if (!serializedPayloads.empty()) {
         stanzaElement.addNode(std::make_shared<XMLRawTextNode>(serializedPayloads));
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -12,19 +12,19 @@
 
 #include <QApplication>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QMenu>
 #include <QTextDocument>
+#include <QMimeData>
 
 #include <Swiften/Base/Log.h>
-#include <Swiften/Base/foreach.h>
-
-#include <Swift/Controllers/SettingConstants.h>
 
 #include <SwifTools/SpellChecker.h>
 #include <SwifTools/SpellCheckerFactory.h>
 
 #include <Swift/QtUI/QtSpellCheckerWindow.h>
 #include <Swift/QtUI/QtSwiftUtil.h>
+#include <Swift/QtUI/QtUISettingConstants.h>
 #include <Swift/QtUI/QtUtilities.h>
 
 namespace Swift {
@@ -60,6 +60,12 @@ void QtTextEdit::keyPressEvent(QKeyEvent* event) {
                || (key == Qt::Key_Tab && modifiers == Qt::ControlModifier)
                || (key == Qt::Key_A && modifiers == Qt::AltModifier)
                || (key == Qt::Key_Tab)
+#ifdef SWIFTEN_PLATFORM_MACOSX
+               || (key == Qt::Key_Minus && (modifiers & Qt::ControlModifier))
+               || (key == Qt::Key_Equal && (modifiers & Qt::ControlModifier))
+#endif
+               || (event->matches(QKeySequence::ZoomIn))
+               || (event->matches(QKeySequence::ZoomOut))
     ) {
         emit unhandledKeyPressEvent(event);
     }
@@ -78,14 +84,43 @@ void QtTextEdit::keyPressEvent(QKeyEvent* event) {
     }
 }
 
+void QtTextEdit::setEmphasiseFocus(bool emphasise) {
+    emphasiseFocus_ = emphasise;
+    updateStyleSheet();
+}
+
+void QtTextEdit::setCorrectionHighlight(bool correctionHighlight) {
+    correctionHighlight_ = correctionHighlight;
+    updateStyleSheet();
+}
+
+void QtTextEdit::updateStyleSheet() {
+    QString newStyleSheet;
+
+    if (correctionHighlight_) {
+        newStyleSheet += "background: rgb(255, 255, 153); color: black;";
+    }
+
+    if (emphasiseFocus_) {
+        if (hasFocus()) {
+            newStyleSheet += "border: 2px solid palette(highlight);";
+        }
+    }
+
+    setStyleSheet(newStyleSheet);
+    handleTextChanged();
+}
+
 void QtTextEdit::focusInEvent(QFocusEvent* event) {
     receivedFocus();
     QTextEdit::focusInEvent(event);
+    updateStyleSheet();
 }
 
 void QtTextEdit::focusOutEvent(QFocusEvent* event) {
     lostFocus();
     QTextEdit::focusOutEvent(event);
+    updateStyleSheet();
 }
 
 void QtTextEdit::handleTextChanged() {
@@ -145,6 +180,15 @@ void QtTextEdit::contextMenuEvent(QContextMenuEvent* event) {
     delete menu;
 }
 
+void QtTextEdit::dropEvent(QDropEvent* event) {
+    if (event->mimeData()->hasUrls()) {
+        itemDropped(event);
+    }
+    else {
+        QTextEdit::dropEvent(event);
+    }
+}
+
 void QtTextEdit::addSuggestions(QMenu* menu, QContextMenuEvent* event)
 {
     replaceWordActions_.clear();
@@ -184,18 +228,18 @@ void QtTextEdit::setUpSpellChecker() {
     highlighter_ = nullptr;
     delete checker_;
     checker_ = nullptr;
-    if (settings_->getSetting(SettingConstants::SPELL_CHECKER)) {
+    if (settings_->getSetting(QtUISettingConstants::SPELL_CHECKER)) {
         checker_ = SpellCheckerFactory().createSpellChecker();
         if (checker_) {
             if (!checker_->isAutomaticallyDetectingLanguage()) {
-                checker_->setActiveLanguage(settings_->getSetting(SettingConstants::SPELL_CHECKER_LANGUAGE));
+                checker_->setActiveLanguage(settings_->getSetting(QtUISettingConstants::SPELL_CHECKER_LANGUAGE));
             }
             highlighter_ = new QtSpellCheckHighlighter(document(), checker_);
         }
         else {
             // Spellchecking is not working, as we did not get a valid checker from the factory. Disable spellchecking.
             SWIFT_LOG(warning) << "Spellchecking is currently misconfigured in Swift (e.g. missing dictionary or broken dictionary file). Disable spellchecking." << std::endl;
-            settings_->storeSetting(SettingConstants::SPELL_CHECKER, false);
+            settings_->storeSetting(QtUISettingConstants::SPELL_CHECKER, false);
         }
 
     }
@@ -223,8 +267,8 @@ void QtTextEdit::spellCheckerSettingsWindow() {
 }
 
 void QtTextEdit::handleSettingChanged(const std::string& settings) {
-    if (settings == SettingConstants::SPELL_CHECKER.getKey() ||
-        settings == SettingConstants::SPELL_CHECKER_LANGUAGE.getKey()) {
+    if (settings == QtUISettingConstants::SPELL_CHECKER.getKey() ||
+        settings == QtUISettingConstants::SPELL_CHECKER_LANGUAGE.getKey()) {
 #ifdef HAVE_SPELLCHECKER
         setUpSpellChecker();
         if (highlighter_) {

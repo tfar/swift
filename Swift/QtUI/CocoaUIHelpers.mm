@@ -13,14 +13,13 @@
 #include "CocoaUIHelpers.h"
 
 #include <memory>
+
 #include <boost/type_traits.hpp>
 
 #include <Cocoa/Cocoa.h>
 
 #include <Security/Security.h>
 #include <SecurityInterface/SFCertificatePanel.h>
-
-#include <Swiften/Base/foreach.h>
 
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 
@@ -29,7 +28,7 @@ namespace Swift {
 void CocoaUIHelpers::displayCertificateChainAsSheet(QWidget* parent, const std::vector<Certificate::ref>& chain) {
     NSWindow* parentWindow = [((NSView*)parent->winId()) window];
     NSMutableArray* certificates = [[NSMutableArray alloc] init];
-    foreach(Certificate::ref cert, chain) {
+    for (auto&& cert : chain) {
         // convert chain to SecCertificateRef
         ByteArray certAsDER = cert->toDER();
         std::shared_ptr<boost::remove_pointer<CFDataRef>::type> certData(CFDataCreate(nullptr, certAsDER.data(), certAsDER.size()), CFRelease);
@@ -39,11 +38,14 @@ void CocoaUIHelpers::displayCertificateChainAsSheet(QWidget* parent, const std::
         [certificates addObject: (id)macCert.get()];
     }
 
-
     SFCertificatePanel* panel = [[SFCertificatePanel alloc] init];
     //[panel setPolicies:(id)policies.get()];
     [panel beginSheetForWindow:parentWindow modalDelegate:nil didEndSelector:nullptr contextInfo:nullptr certificates:certificates showGroup:YES];
     [certificates release];
+}
+
+void CocoaUIHelpers::sendCocoaApplicationWillTerminateNotification() {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"NSApplicationWillTerminateNotification" object:nil];
 }
 
 }

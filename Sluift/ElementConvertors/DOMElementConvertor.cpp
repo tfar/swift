@@ -10,7 +10,6 @@
 
 #include <lua.hpp>
 
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Elements/RawXMLPayload.h>
 #include <Swiften/Parser/Attribute.h>
 #include <Swiften/Parser/AttributeMap.h>
@@ -48,7 +47,7 @@ namespace {
                 if (!attributes.getEntries().empty()) {
                     lua_newtable(L);
                     int i = 1;
-                    foreach(const AttributeMap::Entry& entry, attributes.getEntries()) {
+                    for (const auto& entry : attributes.getEntries()) {
                         lua_pushnumber(L, i);
                         lua_newtable(L);
                         lua_pushstring(L, entry.getAttribute().getName().c_str());
@@ -186,7 +185,7 @@ boost::optional<std::string> DOMElementConvertor::convertToLua(
 
     // Parse the payload again
     ParserClient parserClient(L);
-    std::shared_ptr<XMLParser> parser(parsers.createXMLParser(&parserClient));
+    std::shared_ptr<XMLParser> parser(std::move(parsers.createXMLParser(&parserClient)));
     bool result = parser->parse(serializedPayload);
     assert(result);
 

@@ -1,10 +1,12 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
 
 #include <Swift/QtUI/QtUIFactory.h>
+
+#include <algorithm>
 
 #include <QSplitter>
 
@@ -21,7 +23,7 @@
 #include <Swift/QtUI/QtChatWindowFactory.h>
 #include <Swift/QtUI/QtContactEditWindow.h>
 #include <Swift/QtUI/QtFileTransferListWidget.h>
-#include <Swift/QtUI/QtHighlightEditor.h>
+#include <Swift/QtUI/QtHighlightNotificationConfigDialog.h>
 #include <Swift/QtUI/QtHistoryWindow.h>
 #include <Swift/QtUI/QtJoinMUCWindow.h>
 #include <Swift/QtUI/QtLoginWindow.h>
@@ -38,7 +40,7 @@
 
 namespace Swift {
 
-QtUIFactory::QtUIFactory(SettingsProviderHierachy* settings, QtSettingsProvider* qtOnlySettings, QtChatTabsBase* tabs, QtSingleWindow* netbookSplitter, QtSystemTray* systemTray, QtChatWindowFactory* chatWindowFactory, TimerFactory* timerFactory, StatusCache* statusCache, bool startMinimized, bool emoticonsExist, bool enableAdHocCommandOnJID) : settings(settings), qtOnlySettings(qtOnlySettings), tabsBase(tabs), netbookSplitter(netbookSplitter), systemTray(systemTray), chatWindowFactory(chatWindowFactory), timerFactory_(timerFactory), lastMainWindow(nullptr), loginWindow(nullptr), statusCache(statusCache), startMinimized(startMinimized), emoticonsExist_(emoticonsExist), enableAdHocCommandOnJID_(enableAdHocCommandOnJID) {
+QtUIFactory::QtUIFactory(SettingsProviderHierachy* settings, QtSettingsProvider* qtOnlySettings, QtChatTabsBase* tabs, QtSingleWindow* netbookSplitter, QtSystemTray* systemTray, QtChatWindowFactory* chatWindowFactory, TimerFactory* timerFactory, StatusCache* statusCache, AutoUpdater* autoUpdater, bool startMinimized, bool emoticonsExist, bool enableAdHocCommandOnJID) : settings(settings), qtOnlySettings(qtOnlySettings), tabsBase(tabs), netbookSplitter(netbookSplitter), systemTray(systemTray), chatWindowFactory(chatWindowFactory), timerFactory_(timerFactory), lastMainWindow(nullptr), loginWindow(nullptr), statusCache(statusCache), autoUpdater(autoUpdater), startMinimized(startMinimized), emoticonsExist_(emoticonsExist), enableAdHocCommandOnJID_(enableAdHocCommandOnJID) {
     chatFontSize = settings->getSetting(QtUISettingConstants::CHATWINDOW_FONT_SIZE);
     historyFontSize_ = settings->getSetting(QtUISettingConstants::HISTORYWINDOW_FONT_SIZE);
     this->tabs = dynamic_cast<QtChatTabs*>(tabsBase);
@@ -85,7 +87,7 @@ MainWindow* QtUIFactory::createMainWindow(UIEventStream* eventStream) {
 }
 
 LoginWindow* QtUIFactory::createLoginWindow(UIEventStream* eventStream) {
-    loginWindow = new QtLoginWindow(eventStream, settings, timerFactory_);
+    loginWindow = new QtLoginWindow(eventStream, settings, timerFactory_, autoUpdater);
     if (netbookSplitter) {
         netbookSplitter->insertAtFront(loginWindow);
     }
@@ -120,19 +122,15 @@ MUCSearchWindow* QtUIFactory::createMUCSearchWindow() {
 
 ChatWindow* QtUIFactory::createChatWindow(const JID& contact, UIEventStream* eventStream) {
     QtChatWindow* window = dynamic_cast<QtChatWindow*>(chatWindowFactory->createChatWindow(contact, eventStream));
+
+    // remove already closed and thereby deleted chat windows
+    chatWindows.erase(std::remove_if(chatWindows.begin(), chatWindows.end(),
+        [](QPointer<QtChatWindow>& window) {
+            return window.isNull();
+        }), chatWindows.end());
+
     chatWindows.push_back(window);
-    std::vector<QPointer<QtChatWindow> > deletions;
-    foreach (QPointer<QtChatWindow> existingWindow, chatWindows) {
-        if (existingWindow.isNull()) {
-            deletions.push_back(existingWindow);
-        } else {
-            connect(window, SIGNAL(fontResized(int)), existingWindow, SLOT(handleFontResized(int)));
-            connect(existingWindow, SIGNAL(fontResized(int)), window, SLOT(handleFontResized(int)));
-        }
-    }
-    foreach (QPointer<QtChatWindow> deletedWindow, deletions) {
-        chatWindows.erase(std::remove(chatWindows.begin(), chatWindows.end(), deletedWindow), chatWindows.end());
-    }
+
     connect(window, SIGNAL(fontResized(int)), this, SLOT(handleChatWindowFontResized(int)));
     window->handleFontResized(chatFontSize);
     return window;
@@ -141,6 +139,13 @@ ChatWindow* QtUIFactory::createChatWindow(const JID& contact, UIEventStream* eve
 void QtUIFactory::handleChatWindowFontResized(int size) {
     chatFontSize = size;
     settings->storeSetting(QtUISettingConstants::CHATWINDOW_FONT_SIZE, size);
+
+    // resize font in other chat windows
+    for (auto&& existingWindow : chatWindows) {
+        if (!existingWindow.isNull()) {
+            existingWindow->handleFontResized(size);
+        }
+    }
 }
 
 UserSearchWindow* QtUIFactory::createUserSearchWindow(UserSearchWindow::Type type, UIEventStream* eventStream, const std::set<std::string>& groups) {
@@ -164,7 +169,7 @@ WhiteboardWindow* QtUIFactory::createWhiteboardWindow(std::shared_ptr<Whiteboard
 }
 
 HighlightEditorWindow* QtUIFactory::createHighlightEditorWindow() {
-    return new QtHighlightEditor(qtOnlySettings);
+    return new QtHighlightNotificationConfigDialog(qtOnlySettings);
 }
 
 BlockListEditorWidget *QtUIFactory::createBlockListEditorWidget() {

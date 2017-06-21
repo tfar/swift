@@ -1,3 +1,10 @@
+4.0-rc1 ( 2017-05-17 )
+----------------------
+- Handle sessions being closed by the server
+- Verify certificates when using HTTPS in BOSH connections
+- In memory caching of latest entity capabilites lookups
+- Fix several smaller leaks and other bugs
+
 4.0-beta1 ( 2016-07-15 )
 ------------------------
 - Moved code-base to C++11

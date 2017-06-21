@@ -1,7 +1,10 @@
 import SCons.Util, os.path
+from datetime import date
 
 def generate(env) :
-    def createAppBundle(env, bundle, version = "1.0", resources = [], frameworks = [], info = {}, handlesXMPPURIs = False) :
+    def createAppBundle(env, bundle, version = "1.0", resources = [], frameworks = [], info = {}, handlesXMPPURIs = False, sparklePublicDSAKey = None) :
+        env.Tool("InstallWithSymLinks", toolpath = ["#/BuildTools/SCons/Tools"])
+
         bundleDir = bundle + ".app"
         bundleContentsDir = bundleDir + "/Contents"
         resourcesDir = bundleContentsDir + "/Resources"
@@ -20,7 +23,7 @@ def generate(env) :
                 "CFBundleVersion" : version,
                 "CFBundleIconFile" : bundle,
                 "NSPrincipalClass" : "NSApplication",
-                "NSHumanReadableCopyright" : "(c) 2010 Swift Development Team.\nAll Rights Reserved."
+                "NSHumanReadableCopyright" : "(c) 2010-%d Isode Ltd.\nAll Rights Reserved." % date.today().year
             }
         infoDict.update(info)
 
@@ -44,6 +47,11 @@ def generate(env) :
                 </array>
         </dict>
 </array>\n"""
+
+        if sparklePublicDSAKey :
+            plist += "<key>SUPublicDSAKeyFile</key>"
+            plist += "<string>" + sparklePublicDSAKey.name.encode("utf-8") + "</string>"
+            env.Install(resourcesDir, sparklePublicDSAKey)
         plist += """</dict>
     </plist>
     """
@@ -53,7 +61,7 @@ def generate(env) :
             env.Install(os.path.join(resourcesDir, target), resource)
 
         for framework in frameworks :
-            env.Install(frameworksDir, framework)
+            env.InstallWithSymLinks(frameworksDir, framework)
 
         return env.Dir(bundleDir)
 

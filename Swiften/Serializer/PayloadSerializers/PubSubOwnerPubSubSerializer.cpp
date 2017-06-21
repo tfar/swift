@@ -4,25 +4,22 @@
  * See the COPYING file for more information.
  */
 
-#pragma clang diagnostic ignored "-Wunused-private-field"
-
 #include <Swiften/Serializer/PayloadSerializers/PubSubOwnerPubSubSerializer.h>
-#include <Swiften/Serializer/XML/XMLElement.h>
+
 #include <memory>
 
-#include <Swiften/Serializer/PayloadSerializerCollection.h>
-#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerDeleteSerializer.h>
-#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerSubscriptionsSerializer.h>
-#include <Swiften/Serializer/XML/XMLRawTextNode.h>
-#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerDefaultSerializer.h>
-#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerPurgeSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/PubSubOwnerAffiliationsSerializer.h>
 #include <Swiften/Serializer/PayloadSerializers/PubSubOwnerConfigureSerializer.h>
-#include <Swiften/Base/foreach.h>
+#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerDefaultSerializer.h>
+#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerDeleteSerializer.h>
+#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerPurgeSerializer.h>
+#include <Swiften/Serializer/PayloadSerializers/PubSubOwnerSubscriptionsSerializer.h>
+#include <Swiften/Serializer/XML/XMLElement.h>
+#include <Swiften/Serializer/XML/XMLRawTextNode.h>
 
 using namespace Swift;
 
-PubSubOwnerPubSubSerializer::PubSubOwnerPubSubSerializer(PayloadSerializerCollection* serializers) : serializers(serializers) {
+PubSubOwnerPubSubSerializer::PubSubOwnerPubSubSerializer(PayloadSerializerCollection* serializers) {
     pubsubSerializers.push_back(std::make_shared<PubSubOwnerConfigureSerializer>(serializers));
     pubsubSerializers.push_back(std::make_shared<PubSubOwnerSubscriptionsSerializer>(serializers));
     pubsubSerializers.push_back(std::make_shared<PubSubOwnerDefaultSerializer>(serializers));
@@ -40,7 +37,7 @@ std::string PubSubOwnerPubSubSerializer::serializePayload(std::shared_ptr<PubSub
     }
     XMLElement element("pubsub", "http://jabber.org/protocol/pubsub#owner");
     std::shared_ptr<PubSubOwnerPayload> p = payload->getPayload();
-    foreach(std::shared_ptr<PayloadSerializer> serializer, pubsubSerializers) {
+    for (const auto& serializer : pubsubSerializers) {
         if (serializer->canSerialize(p)) {
             element.addNode(std::make_shared<XMLRawTextNode>(serializer->serialize(p)));
         }

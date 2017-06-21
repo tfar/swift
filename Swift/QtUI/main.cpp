@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -89,8 +89,15 @@ int main(int argc, char* argv[]) {
     QTranslator qtTranslator;
     if (!someTranslationPath.empty()) {
 #if QT_VERSION >= 0x040800
+        std::string language;
         if (vm.count("language") > 0) {
-            qtTranslator.load(QString(SWIFT_APPLICATION_NAME).toLower() + "_" + P2QSTRING(vm["language"].as<std::string>()), P2QSTRING(Swift::pathToString(someTranslationPath.parent_path())));
+            try {
+                language = vm["language"].as<std::string>();
+            } catch (const boost::bad_any_cast&) {
+            }
+        }
+        if (!language.empty()) {
+            qtTranslator.load(QString(SWIFT_APPLICATION_NAME).toLower() + "_" + P2QSTRING(language), P2QSTRING(Swift::pathToString(someTranslationPath.parent_path())));
         }
         else {
             qtTranslator.load(QLocale::system(), QString(SWIFT_APPLICATION_NAME).toLower(), "_", P2QSTRING(Swift::pathToString(someTranslationPath)));
@@ -107,6 +114,14 @@ int main(int argc, char* argv[]) {
     QtTranslator swiftTranslator;
     Swift::Translator::setInstance(&swiftTranslator);
 
+#if QT_VERSION < 0x050501
+    /*  According to Qt documenation, Qt is suppsoed to set the applications layout
+     *  direction based on the translatable QT_LAYOUT_DIRECTION string. There is a
+     *  bug in Qt prior version 5.5.1, i.e. QTBUG-43447, thus we set the layout
+     *  direction manually based on the tranlsated QT_LAYOUT_DIRECTION string.
+     */
+    app.setLayoutDirection(QGuiApplication::tr("QT_LAYOUT_DIRECTION") == QLatin1String("RTL") ? Qt::RightToLeft : Qt::LeftToRight);
+#endif
 
     Swift::QtSwift swift(vm);
     int result = app.exec();

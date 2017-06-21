@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -8,10 +8,12 @@
 
 #include <QApplication>
 #include <QDesktopServices>
+#include <QDesktopWidget>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileDevice>
 #include <QInputDialog>
 #include <QKeyEvent>
 #include <QMessageBox>
@@ -19,6 +21,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWebFrame>
+#include <QWebSettings>
 #include <QtDebug>
 
 #include <Swiften/Base/FileSize.h>
@@ -48,6 +51,10 @@ const QString QtWebKitChatView::ButtonFileTransferSendRequest = QString("filetra
 const QString QtWebKitChatView::ButtonFileTransferAcceptRequest = QString("filetransfer-acceptrequest");
 const QString QtWebKitChatView::ButtonFileTransferOpenFile = QString("filetransfer-openfile");
 const QString QtWebKitChatView::ButtonMUCInvite = QString("mucinvite");
+
+namespace {
+    const double minimalFontScaling = 0.7;
+}
 
 QtWebKitChatView::QtWebKitChatView(QtChatWindow* window, UIEventStream* eventStream, QtChatTheme* theme, QWidget* parent, bool disableAutoScroll) : QtChatView(parent), window_(window), eventStream_(eventStream), fontSizeSteps_(0), disableAutoScroll_(disableAutoScroll), previousMessageKind_(PreviosuMessageWasNone), previousMessageWasSelf_(false), showEmoticons_(false), insertingLastLine_(false), idCounter_(0) {
     theme_ = theme;
@@ -108,8 +115,9 @@ void QtWebKitChatView::handleClearRequested() {
     messageBox.setDefaultButton(QMessageBox::Yes);
     int button = messageBox.exec();
     if (button == QMessageBox::Yes) {
-        logCleared();
         resetView();
+        logCleared();
+        resizeFont(fontSizeSteps_);
     }
 }
 
@@ -301,14 +309,14 @@ void QtWebKitChatView::decreaseFontSize() {
 
 void QtWebKitChatView::resizeFont(int fontSizeSteps) {
     fontSizeSteps_ = fontSizeSteps;
-    double size = 1.0 + 0.2 * fontSizeSteps_;
+    double size = minimalFontScaling + 0.1 * fontSizeSteps_;
     QString sizeString(QString().setNum(size, 'g', 3) + "em");
 
     // Set the font size in the <style id="text-resize-style"> element in the theme <head> element.
     QWebElement resizableTextStyle = document_.findFirst("style#text-resize-style");
     assert(!resizableTextStyle.isNull());
     resizableTextStyle.setInnerXml(QString("span.swift_resizable { font-size: %1;}").arg(sizeString));
-    webView_->setFontSizeIsMinimal(size == 1.0);
+    webView_->setFontSizeIsMinimal(size == minimalFontScaling);
 }
 
 void QtWebKitChatView::resetView() {
@@ -341,6 +349,20 @@ void QtWebKitChatView::resetView() {
     QWebElement body = document_.findFirst("body");
     assert(!body.isNull());
     body.setAttribute("onscroll", "chatwindow.verticalScrollBarPositionChanged(document.body.scrollTop / (document.body.scrollHeight - window.innerHeight))");
+
+    // Adjust web view default 96 DPI setting to screen DPI.
+    // For more information see https://webkit.org/blog/57/css-units/
+    webView_->setZoomFactor(QApplication::desktop()->screen()->logicalDpiX() / 96.0);
+
+    body.setStyleProperty("font-size", QString("%1pt").arg(QApplication::font().pointSize()));
+
+#ifdef Q_OS_WIN
+    // Fix for Swift-162
+    // Changing the font weight for windows in order for the fonts to display better.
+    // In the future, when we enable dpiawareness on windows, this can be reverted.
+    body.setStyleProperty("font-weight", QString("500"));
+#endif // Q_OS_WIN
+
 }
 
 static QWebElement findElementWithID(QWebElement document, QString elementName, QString id) {
@@ -466,28 +488,28 @@ std::string QtWebKitChatView::addMessage(
         std::shared_ptr<SecurityLabel> label,
         const std::string& avatarPath,
         const boost::posix_time::ptime& time) {
-    return addMessage(chatMessageToHTML(message), senderName, senderIsSelf, label, avatarPath, "", time, message.getFullMessageHighlightAction(), ChatSnippet::getDirection(message));
+    return addMessage(chatMessageToHTML(message), senderName, senderIsSelf, label, avatarPath, "", time, message.getHighlightActionSender(), ChatSnippet::getDirection(message));
 }
 
 QString QtWebKitChatView::getHighlightSpanStart(const std::string& text, const std::string& background) {
-    QString ecsapeColor = QtUtilities::htmlEscape(P2QSTRING(text));
-    QString escapeBackground = QtUtilities::htmlEscape(P2QSTRING(background));
-    if (ecsapeColor.isEmpty()) {
-        ecsapeColor = "black";
+    QString ecsapeColor;
+    QString escapeBackground;
+    if (!text.empty()) {
+        ecsapeColor = QString("color: %1").arg(QtUtilities::htmlEscape(P2QSTRING(text)));
     }
-    if (escapeBackground.isEmpty()) {
-        escapeBackground = "yellow";
+    if (!background.empty()) {
+        escapeBackground = QString("background: %1").arg(QtUtilities::htmlEscape(P2QSTRING(background)));
     }
-    return QString("<span style=\"color: %1; background: %2\">").arg(ecsapeColor).arg(escapeBackground);
+    return QString("<span style=\"%1; %2;\">").arg(ecsapeColor).arg(escapeBackground);
 }
 
 QString QtWebKitChatView::getHighlightSpanStart(const HighlightAction& highlight) {
-    return getHighlightSpanStart(highlight.getTextColor(), highlight.getTextBackground());
+    return getHighlightSpanStart(highlight.getFrontColor().get_value_or(""), highlight.getBackColor().get_value_or(""));
 }
 
 QString QtWebKitChatView::chatMessageToHTML(const ChatWindow::ChatMessage& message) {
     QString result;
-    foreach (std::shared_ptr<ChatWindow::ChatMessagePart> part, message.getParts()) {
+    for (const auto& part : message.getParts()) {
         std::shared_ptr<ChatWindow::ChatTextMessagePart> textPart;
         std::shared_ptr<ChatWindow::ChatURIMessagePart> uriPart;
         std::shared_ptr<ChatWindow::ChatEmoticonMessagePart> emoticonPart;
@@ -511,7 +533,7 @@ QString QtWebKitChatView::chatMessageToHTML(const ChatWindow::ChatMessage& messa
             continue;
         }
         if ((highlightPart = std::dynamic_pointer_cast<ChatWindow::ChatHighlightingMessagePart>(part))) {
-            QString spanStart = getHighlightSpanStart(highlightPart->action.getTextColor(), highlightPart->action.getTextBackground());
+            QString spanStart = getHighlightSpanStart(highlightPart->action.getFrontColor().get_value_or(""), highlightPart->action.getBackColor().get_value_or(""));
             result += spanStart + QtUtilities::htmlEscape(P2QSTRING(highlightPart->text)) + "</span>";
             continue;
         }
@@ -542,14 +564,14 @@ std::string QtWebKitChatView::addMessage(
     QString styleSpanStart = style == "" ? "" : "<span style=\"" + style + "\">";
     QString styleSpanEnd = style == "" ? "" : "</span>";
 
-    bool highlightWholeMessage = highlight.highlightWholeMessage() && highlight.getTextBackground() != "" && highlight.getTextColor() != "";
+    bool highlightWholeMessage = highlight.getFrontColor() || highlight.getBackColor();
     QString highlightSpanStart = highlightWholeMessage ? getHighlightSpanStart(highlight) : "";
     QString highlightSpanEnd = highlightWholeMessage ? "</span>" : "";
     htmlString += "<span class='swift_inner_message'>" + styleSpanStart + highlightSpanStart + message + highlightSpanEnd + styleSpanEnd + "</span>" ;
 
     bool appendToPrevious = appendToPreviousCheck(PreviousMessageWasMessage, senderName, senderIsSelf);
 
-    QString qAvatarPath =  scaledAvatarPath.isEmpty() ? "qrc:/icons/avatar.png" : QUrl::fromLocalFile(scaledAvatarPath).toEncoded();
+    QString qAvatarPath = scaledAvatarPath.isEmpty() ? "qrc:/icons/avatar.svg" : QUrl::fromLocalFile(scaledAvatarPath).toEncoded();
     std::string id = "id" + boost::lexical_cast<std::string>(idCounter_++);
     addMessageBottom(std::make_shared<MessageSnippet>(htmlString, QtUtilities::htmlEscape(P2QSTRING(senderName)), B2QDATE(time), qAvatarPath, senderIsSelf, appendToPrevious, theme_, P2QSTRING(id), direction));
 
@@ -560,7 +582,7 @@ std::string QtWebKitChatView::addMessage(
 }
 
 std::string QtWebKitChatView::addAction(const ChatWindow::ChatMessage& message, const std::string &senderName, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const std::string& avatarPath, const boost::posix_time::ptime& time) {
-    return addMessage(" *" + chatMessageToHTML(message) + "*", senderName, senderIsSelf, label, avatarPath, "font-style:italic ", time, message.getFullMessageHighlightAction(), ChatSnippet::getDirection(message));
+    return addMessage(" *" + chatMessageToHTML(message) + "*", senderName, senderIsSelf, label, avatarPath, "font-style:italic ", time, message.getHighlightActionSender(), ChatSnippet::getDirection(message));
 }
 
 static QString encodeButtonArgument(const QString& str) {
@@ -588,7 +610,7 @@ void QtWebKitChatView::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
 }
 
-std::string QtWebKitChatView::addFileTransfer(const std::string& senderName, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description) {
+std::string QtWebKitChatView::addFileTransfer(const std::string& senderName, const std::string& avatarPath, bool senderIsSelf, const std::string& filename, const boost::uintmax_t sizeInBytes, const std::string& description) {
     SWIFT_LOG(debug) << "addFileTransfer" << std::endl;
     QString ft_id = QString("ft%1").arg(P2QSTRING(boost::lexical_cast<std::string>(idCounter_++)));
 
@@ -620,11 +642,9 @@ std::string QtWebKitChatView::addFileTransfer(const std::string& senderName, boo
             "</div>";
     }
 
-    //addMessage(message, senderName, senderIsSelf, std::shared_ptr<SecurityLabel>(), "", boost::posix_time::second_clock::local_time());
-
     bool appendToPrevious = appendToPreviousCheck(PreviousMessageWasFileTransfer, senderName, senderIsSelf);
-
-    QString qAvatarPath = "qrc:/icons/avatar.png";
+    QString scaledAvatarPath = QtScaledAvatarCache(32).getScaledAvatarPath(avatarPath.c_str());
+    QString qAvatarPath = scaledAvatarPath.isEmpty() ? "qrc:/icons/avatar.svg" : QUrl::fromLocalFile(scaledAvatarPath).toEncoded();
     std::string id = "ftmessage" + boost::lexical_cast<std::string>(idCounter_++);
     addMessageBottom(std::make_shared<MessageSnippet>(htmlString, QtUtilities::htmlEscape(P2QSTRING(senderName)), B2QDATE(boost::posix_time::second_clock::universal_time()), qAvatarPath, senderIsSelf, appendToPrevious, theme_, P2QSTRING(id), ChatSnippet::getDirection(actionText)));
 
@@ -658,7 +678,7 @@ std::string QtWebKitChatView::addWhiteboardRequest(const QString& contact, bool 
                 buildChatWindowButton(tr("Accept"), ButtonWhiteboardSessionAcceptRequest, wb_id) +
             "</div>";
     }
-    QString qAvatarPath = "qrc:/icons/avatar.png";
+    QString qAvatarPath = "qrc:/icons/avatar.svg";
     std::string id = "wbmessage" + boost::lexical_cast<std::string>(idCounter_++);
     addMessageBottom(std::make_shared<MessageSnippet>(htmlString, QtUtilities::htmlEscape(contact), B2QDATE(boost::posix_time::second_clock::universal_time()), qAvatarPath, false, false, theme_, P2QSTRING(id), ChatSnippet::getDirection(actionText)));
     previousMessageWasSelf_ = false;
@@ -823,11 +843,11 @@ std::string QtWebKitChatView::addSystemMessage(const ChatWindow::ChatMessage& me
 }
 
 void QtWebKitChatView::replaceWithAction(const ChatWindow::ChatMessage& message, const std::string& id, const boost::posix_time::ptime& time) {
-    replaceMessage(" *" + chatMessageToHTML(message) + "*", id, time, "font-style:italic ", message.getFullMessageHighlightAction());
+    replaceMessage(" *" + chatMessageToHTML(message) + "*", id, time, "font-style:italic ", message.getHighlightActionSender());
 }
 
 void QtWebKitChatView::replaceMessage(const ChatWindow::ChatMessage& message, const std::string& id, const boost::posix_time::ptime& time) {
-    replaceMessage(chatMessageToHTML(message), id, time, "", message.getFullMessageHighlightAction());
+    replaceMessage(chatMessageToHTML(message), id, time, "", message.getHighlightActionSender());
 }
 
 void QtWebKitChatView::replaceSystemMessage(const ChatWindow::ChatMessage& message, const std::string& id, ChatWindow::TimestampBehaviour timestampBehavior) {
@@ -864,8 +884,8 @@ void QtWebKitChatView::replaceMessage(const QString& message, const std::string&
 
         QString styleSpanStart = style == "" ? "" : "<span style=\"" + style + "\">";
         QString styleSpanEnd = style == "" ? "" : "</span>";
-        QString highlightSpanStart = highlight.highlightWholeMessage() ? getHighlightSpanStart(highlight) : "";
-        QString highlightSpanEnd = highlight.highlightWholeMessage() ? "</span>" : "";
+        QString highlightSpanStart = (highlight.getFrontColor() || highlight.getBackColor()) ? getHighlightSpanStart(highlight) : "";
+        QString highlightSpanEnd = (highlight.getFrontColor() || highlight.getBackColor()) ? "</span>" : "";
         messageHTML = styleSpanStart + highlightSpanStart + messageHTML + highlightSpanEnd + styleSpanEnd;
 
         replaceMessage(messageHTML, P2QSTRING(id), B2QDATE(time));
@@ -919,7 +939,7 @@ void QtWebKitChatView::addMUCInvitation(const std::string& senderName, const JID
 
     bool appendToPrevious = appendToPreviousCheck(PreviousMessageWasMUCInvite, senderName, false);
 
-    QString qAvatarPath = "qrc:/icons/avatar.png";
+    QString qAvatarPath = "qrc:/icons/avatar.svg";
 
     addMessageBottom(std::make_shared<MessageSnippet>(htmlString, QtUtilities::htmlEscape(P2QSTRING(senderName)), B2QDATE(boost::posix_time::second_clock::universal_time()), qAvatarPath, false, appendToPrevious, theme_, id, ChatSnippet::getDirection(message)));
     previousMessageWasSelf_ = false;
@@ -947,13 +967,13 @@ void QtWebKitChatView::setMessageReceiptState(const std::string& id, ChatWindow:
     QString xml;
     switch (state) {
         case ChatWindow::ReceiptReceived:
-            xml = "<img src='qrc:/icons/delivery-successful.png' title='" + tr("The receipt for this message has been received.") + "'/>";
+            xml = "<img src='qrc:/icons/delivery-success.svg' title='" + tr("The receipt for this message has been received.") + "'/>";
             break;
         case ChatWindow::ReceiptRequested:
-            xml = "<img src='qrc:/icons/warn.png' title='" + tr("The receipt for this message has not yet been received. The recipient(s) might not have received this message.") + "'/>";
+            xml = "<img src='qrc:/icons/delivery-warning.svg' title='" + tr("The receipt for this message has not yet been received. The recipient(s) might not have received this message.") + "'/>";
             break;
         case ChatWindow::ReceiptFailed:
-            xml = "<img src='qrc:/icons/delivery-failure.png' title='" + tr("Failed to transmit message to the receipient(s).") + "'/>";
+            xml = "<img src='qrc:/icons/delivery-failure.svg' title='" + tr("Failed to transmit message to the receipient(s).") + "'/>";
     }
     setReceiptXML(P2QSTRING(id), xml);
 }

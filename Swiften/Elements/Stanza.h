@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <boost/date_time/posix_time/ptime.hpp>
-#include <boost/optional/optional_fwd.hpp>
+#include <boost/optional/optional.hpp>
 
 #include <Swiften/Base/API.h>
 #include <Swiften/Elements/ToplevelElement.h>
@@ -66,6 +66,11 @@ namespace Swift {
             template<typename InputIterator>
             void addPayloads(InputIterator begin, InputIterator end) {
                 payloads_.insert(payloads_.end(), begin, end);
+            }
+
+            template<typename Container>
+            void addPayloads(const Container& container) {
+                payloads_.insert(payloads_.end(), std::begin(container), std::end(container));
             }
 
             void updatePayload(std::shared_ptr<Payload> payload);

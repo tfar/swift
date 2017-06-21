@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2016 Isode Limited.
+ * Copyright (c) 2014-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -42,16 +42,27 @@ QtFilterWidget::QtFilterWidget(QWidget* parent, QtTreeWidget* treeView, UIEventS
     layout->insertWidget(targetIndex, this);
 
     filterLineEdit_->installEventFilter(this);
-    treeView->installEventFilter(this);
+    treeView_->installEventFilter(this);
 
     sourceModel_ = treeView_->model();
 }
 
 QtFilterWidget::~QtFilterWidget() {
-
+    filterLineEdit_->removeEventFilter(this);
+    if (treeView_) {
+        treeView_->removeEventFilter(this);
+        if (treeView_->getRoster()) {
+            treeView_->getRoster()->onFilterAdded.disconnect(boost::bind(&QtFilterWidget::handleFilterAdded, this, _1));
+            treeView_->getRoster()->onFilterRemoved.disconnect(boost::bind(&QtFilterWidget::handleFilterRemoved, this, _1));
+        }
+    }
 }
 
 bool QtFilterWidget::eventFilter(QObject*, QEvent* event) {
+    if (!treeView_) {
+        return false;
+    }
+
     if (event->type() == QEvent::KeyPress ||
         event->type() == QEvent::KeyRelease ||
         // InputMethodQuery got introduced in Qt 5.
@@ -100,7 +111,7 @@ bool QtFilterWidget::eventFilter(QObject*, QEvent* event) {
 
 void QtFilterWidget::popAllFilters() {
     std::vector<RosterFilter*> filters = treeView_->getRoster()->getFilters();
-    foreach(RosterFilter* filter, filters) {
+    for (auto filter : filters) {
         filters_.push_back(filter);
         treeView_->getRoster()->removeFilter(filter);
     }
@@ -111,13 +122,17 @@ void QtFilterWidget::popAllFilters() {
 void QtFilterWidget::pushAllFilters() {
     treeView_->getRoster()->onFilterAdded.disconnect(boost::bind(&QtFilterWidget::handleFilterAdded, this, _1));
     treeView_->getRoster()->onFilterRemoved.disconnect(boost::bind(&QtFilterWidget::handleFilterRemoved, this, _1));
-    foreach(RosterFilter* filter, filters_) {
+    for (auto filter : filters_) {
         treeView_->getRoster()->addFilter(filter);
     }
     filters_.clear();
 }
 
 void QtFilterWidget::updateRosterFilters() {
+    if (!treeView_) {
+        return;
+    }
+
     if (fuzzyRosterFilter_) {
         if (filterLineEdit_->text().isEmpty()) {
             // remove currently installed search filter and put old filters back
@@ -140,6 +155,10 @@ void QtFilterWidget::updateRosterFilters() {
 }
 
 void QtFilterWidget::updateSearchFilter() {
+    if (!treeView_) {
+        return;
+    }
+
     if (fuzzyRosterFilter_) {
         treeView_->getRoster()->removeFilter(fuzzyRosterFilter_);
         delete fuzzyRosterFilter_;

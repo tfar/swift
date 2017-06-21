@@ -70,11 +70,13 @@ namespace Swift {
     private:
         void moveTab(QtTabWidget* tabWidget, int oldIndex, int newIndex);
         QtTabWidget* createDNDTabWidget(QWidget* parent);
+        void updateEmphasiseFocusOnTabs();
 
     private:
         QGridLayout *gridLayout_;
         bool dndEnabled_;
         QHash<QString, QPoint> tabPositions_;
         QtTabbable* movingTab_;
+        bool resizing_ = false;
     };
 }

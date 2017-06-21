@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -7,14 +7,16 @@
 #include <Swift/Controllers/Chat/MUCController.h>
 
 #include <algorithm>
+#include <cassert>
+#include <memory>
 
 #include <boost/bind.hpp>
 #include <boost/regex.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/range/adaptor/reversed.hpp>
 
 #include <Swiften/Avatars/AvatarManager.h>
 #include <Swiften/Base/Log.h>
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Base/format.h>
 #include <Swiften/Base/Tristate.h>
 #include <Swiften/Client/BlockList.h>
@@ -33,7 +35,7 @@
 #include <SwifTools/TabComplete.h>
 
 #include <Swift/Controllers/Chat/ChatMessageParser.h>
-#include <Swift/Controllers/Highlighter.h>
+#include <Swift/Controllers/Highlighting/Highlighter.h>
 #include <Swift/Controllers/Intl.h>
 #include <Swift/Controllers/Roster/ContactRosterItem.h>
 #include <Swift/Controllers/Roster/GroupRosterItem.h>
@@ -79,6 +81,7 @@ MUCController::MUCController (
         StanzaChannel* stanzaChannel,
         IQRouter* iqRouter,
         ChatWindowFactory* chatWindowFactory,
+        NickResolver* nickResolver,
         PresenceOracle* presenceOracle,
         AvatarManager* avatarManager,
         UIEventStream* uiEventStream,
@@ -86,7 +89,7 @@ MUCController::MUCController (
         TimerFactory* timerFactory,
         EventController* eventController,
         EntityCapsProvider* entityCapsProvider,
-        XMPPRoster* roster,
+        XMPPRoster* xmppRoster,
         HistoryController* historyController,
         MUCRegistry* mucRegistry,
         HighlightManager* highlightManager,
@@ -96,19 +99,23 @@ MUCController::MUCController (
         AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider,
         VCardManager* vcardManager,
         MUCBookmarkManager* mucBookmarkManager) :
-    ChatControllerBase(self, stanzaChannel, iqRouter, chatWindowFactory, muc->getJID(), presenceOracle, avatarManager, useDelayForLatency, uiEventStream, eventController, timerFactory, entityCapsProvider, historyController, mucRegistry, highlightManager, chatMessageParser, autoAcceptMUCInviteDecider), muc_(muc), nick_(nick), desiredNick_(nick), password_(password), renameCounter_(0), isImpromptu_(isImpromptu), isImpromptuAlreadyConfigured_(false), clientBlockListManager_(clientBlockListManager), mucBookmarkManager_(mucBookmarkManager) {
+    ChatControllerBase(self, stanzaChannel, iqRouter, chatWindowFactory, muc->getJID(), nickResolver, presenceOracle, avatarManager, useDelayForLatency, uiEventStream, eventController, entityCapsProvider, historyController, mucRegistry, highlightManager, chatMessageParser, autoAcceptMUCInviteDecider), muc_(muc), nick_(nick), desiredNick_(nick), password_(password), renameCounter_(0), isImpromptu_(isImpromptu), isImpromptuAlreadyConfigured_(false), clientBlockListManager_(clientBlockListManager), mucBookmarkManager_(mucBookmarkManager) {
+    assert(avatarManager_);
+
     parting_ = true;
     joined_ = false;
     lastWasPresence_ = false;
     shouldJoinOnReconnect_ = true;
     doneGettingHistory_ = false;
-    events_ = uiEventStream;
-    xmppRoster_ = roster;
+    xmppRoster_ = xmppRoster;
+    subject_ = "";
+    isInitialJoin_ = true;
+    chatWindowTitle_ = "";
 
-    roster_ = new Roster(false, true);
-    rosterVCardProvider_ = new RosterVCardProvider(roster_, vcardManager, JID::WithResource);
+    roster_ = std::unique_ptr<Roster>(new Roster(false, true));
+    rosterVCardProvider_ = new RosterVCardProvider(roster_.get(), vcardManager, JID::WithResource);
     completer_ = new TabComplete();
-    chatWindow_->setRosterModel(roster_);
+    chatWindow_->setRosterModel(roster_.get());
     chatWindow_->setTabComplete(completer_);
     chatWindow_->onClosed.connect(boost::bind(&MUCController::handleWindowClosed, this));
     chatWindow_->onOccupantSelectionChanged.connect(boost::bind(&MUCController::handleWindowOccupantSelectionChanged, this, _1));
@@ -122,6 +129,7 @@ MUCController::MUCController (
     chatWindow_->onGetAffiliationsRequest.connect(boost::bind(&MUCController::handleGetAffiliationsRequest, this));
     chatWindow_->onChangeAffiliationsRequest.connect(boost::bind(&MUCController::handleChangeAffiliationsRequest, this, _1));
     chatWindow_->onUnblockUserRequest.connect(boost::bind(&MUCController::handleUnblockUserRequest, this));
+    chatWindow_->onContinuationsBroken.connect(boost::bind(&MUCController::addChatSystemMessage, this));
     muc_->onJoinComplete.connect(boost::bind(&MUCController::handleJoinComplete, this, _1));
     muc_->onJoinFailed.connect(boost::bind(&MUCController::handleJoinFailed, this, _1));
     muc_->onOccupantJoined.connect(boost::bind(&MUCController::handleOccupantJoined, this, _1));
@@ -132,8 +140,7 @@ MUCController::MUCController (
     muc_->onAffiliationListReceived.connect(boost::bind(&MUCController::handleAffiliationListReceived, this, _1, _2));
     muc_->onConfigurationFailed.connect(boost::bind(&MUCController::handleConfigurationFailed, this, _1));
     muc_->onConfigurationFormReceived.connect(boost::bind(&MUCController::handleConfigurationFormReceived, this, _1));
-    highlighter_->setMode(isImpromptu_ ? Highlighter::ChatMode : Highlighter::MUCMode);
-    highlighter_->setNick(nick_);
+    chatMessageParser_->setNick(nick_);
     if (timerFactory && stanzaChannel_->isAvailable()) {
         loginCheckTimer_ = std::shared_ptr<Timer>(timerFactory->createTimer(MUC_JOIN_WARNING_TIMEOUT_MILLISECONDS));
         loginCheckTimer_->onTick.connect(boost::bind(&MUCController::handleJoinTimeoutTick, this));
@@ -154,9 +161,8 @@ MUCController::MUCController (
     if (stanzaChannel->isAvailable()) {
         MUCController::setOnline(true);
     }
-    if (avatarManager_ != nullptr) {
-        avatarChangedConnection_ = (avatarManager_->onAvatarChanged.connect(boost::bind(&MUCController::handleAvatarChanged, this, _1)));
-    }
+    avatarChangedConnection_ = (avatarManager_->onAvatarChanged.connect(boost::bind(&MUCController::handleAvatarChanged, this, _1)));
+
     MUCController::handleBareJIDCapsChanged(muc->getJID());
     eventStream_->onUIEvent.connect(boost::bind(&MUCController::handleUIEvent, this, _1));
 
@@ -179,7 +185,6 @@ MUCController::~MUCController() {
     eventStream_->onUIEvent.disconnect(boost::bind(&MUCController::handleUIEvent, this, _1));
     chatWindow_->setRosterModel(nullptr);
     delete rosterVCardProvider_;
-    delete roster_;
     if (loginCheckTimer_) {
         loginCheckTimer_->stop();
     }
@@ -230,16 +235,16 @@ void MUCController::handleActionRequestedOnOccupant(ChatWindow::OccupantAction a
         case ChatWindow::MakeModerator: muc_->changeOccupantRole(mucJID, MUCOccupant::Moderator);break;
         case ChatWindow::MakeParticipant: muc_->changeOccupantRole(mucJID, MUCOccupant::Participant);break;
         case ChatWindow::MakeVisitor: muc_->changeOccupantRole(mucJID, MUCOccupant::Visitor);break;
-        case ChatWindow::AddContact: if (occupant.getRealJID()) events_->send(std::make_shared<RequestAddUserDialogUIEvent>(realJID, occupant.getNick()));break;
-        case ChatWindow::ShowProfile: events_->send(std::make_shared<ShowProfileForRosterItemUIEvent>(mucJID));break;
+        case ChatWindow::AddContact: if (occupant.getRealJID()) eventStream_->send(std::make_shared<RequestAddUserDialogUIEvent>(realJID, occupant.getNick()));break;
+        case ChatWindow::ShowProfile: eventStream_->send(std::make_shared<ShowProfileForRosterItemUIEvent>(mucJID));break;
     }
 }
 
 void MUCController::handleBareJIDCapsChanged(const JID& /*jid*/) {
     Tristate support = Yes;
     bool any = false;
-    foreach (const std::string& nick, currentOccupants_) {
-        DiscoInfo::ref disco = entityCapsProvider_->getCaps(toJID_.toBare().toString() + "/" + nick);
+    for (const auto& nick : currentOccupants_) {
+        DiscoInfo::ref disco = entityCapsProvider_->getCapsCached(toJID_.toBare().toString() + "/" + nick);
         if (disco && disco->hasFeature(DiscoInfo::MessageCorrectionFeature)) {
             any = true;
         } else {
@@ -295,9 +300,8 @@ bool MUCController::isImpromptu() const {
 
 std::map<std::string, JID> MUCController::getParticipantJIDs() const {
     std::map<std::string, JID> participants;
-    typedef std::pair<std::string, MUCOccupant> MUCOccupantPair;
     std::map<std::string, MUCOccupant> occupants = muc_->getOccupants();
-    foreach(const MUCOccupantPair& occupant, occupants) {
+    for (const auto& occupant : occupants) {
         if (occupant.first != nick_) {
             participants[occupant.first] = occupant.second.getRealJID().is_initialized() ? occupant.second.getRealJID().get().toBare() : JID();
         }
@@ -306,7 +310,7 @@ std::map<std::string, JID> MUCController::getParticipantJIDs() const {
 }
 
 void MUCController::sendInvites(const std::vector<JID>& jids, const std::string& reason) const {
-    foreach (const JID& jid, jids) {
+    for (const auto& jid : jids) {
         muc_->invitePerson(jid, reason, isImpromptu_);
     }
 }
@@ -379,14 +383,14 @@ void MUCController::handleJoinComplete(const std::string& nick) {
     receivedActivity();
     renameCounter_ = 0;
     joined_ = true;
-    std::string joinMessage;
     if (isImpromptu_) {
-        joinMessage = str(format(QT_TRANSLATE_NOOP("", "You have joined the chat as %1%.")) % nick);
-    } else {
-        joinMessage = str(format(QT_TRANSLATE_NOOP("", "You have entered room %1% as %2%.")) % toJID_.toString() % nick);
+        lastStartMessage_ = str(format(QT_TRANSLATE_NOOP("", "You have joined the chat as %1%.")) % nick);
+    }
+    else {
+        lastStartMessage_ = str(format(QT_TRANSLATE_NOOP("", "You have entered room %1% as %2%.")) % toJID_.toString() % nick);
     }
     setNick(nick);
-    chatWindow_->replaceSystemMessage(chatMessageParser_->parseMessageBody(joinMessage), lastJoinMessageUID_, ChatWindow::UpdateTimestamp);
+    chatWindow_->replaceSystemMessage(chatMessageParser_->parseMessageBody(lastStartMessage_, "", true), lastJoinMessageUID_, ChatWindow::UpdateTimestamp);
     lastJoinMessageUID_ = "";
 
 #ifdef SWIFT_EXPERIMENTAL_HISTORY
@@ -403,10 +407,6 @@ void MUCController::handleJoinComplete(const std::string& nick) {
         setAvailableRoomActions(occupant.getAffiliation(), occupant.getRole());
     }
     onUserJoined();
-
-    if (isImpromptu_) {
-        setImpromptuWindowTitle();
-    }
 }
 
 void MUCController::handleAvatarChanged(const JID& jid) {
@@ -461,13 +461,10 @@ void MUCController::handleOccupantJoined(const MUCOccupant& occupant) {
         }
 
         if (isImpromptu_) {
-            setImpromptuWindowTitle();
             onActivity("");
         }
     }
-    if (avatarManager_ != nullptr) {
-        handleAvatarChanged(jid);
-    }
+    handleAvatarChanged(jid);
 }
 
 void MUCController::addPresenceMessage(const std::string& message) {
@@ -539,8 +536,14 @@ void MUCController::preHandleIncomingMessage(std::shared_ptr<MessageEvent> messa
     if (messageEvent->getStanza()->getType() == Message::Groupchat) {
         lastActivity_ = boost::posix_time::microsec_clock::universal_time();
     }
-    clearPresenceQueue();
     std::shared_ptr<Message> message = messageEvent->getStanza();
+
+    // This avoids clearing join/leave queue for chat state notification messages
+    // which are not readable (e.g. have no body content).
+    if (!(!messageEvent->isReadable() && message->getPayload<ChatState>())) {
+        clearPresenceQueue();
+    }
+
     if (joined_ && messageEvent->getStanza()->getFrom().getResource() != nick_ && messageTargetsMe(message) && !message->getPayload<Delay>() && messageEvent->isReadable()) {
         chatWindow_->flash();
     }
@@ -561,9 +564,13 @@ void MUCController::preHandleIncomingMessage(std::shared_ptr<MessageEvent> messa
     joined_ = true;
 
     if (message->hasSubject() && !message->getPayload<Body>() && !message->getPayload<Thread>()) {
-        chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(str(format(QT_TRANSLATE_NOOP("", "The room subject is now: %1%")) % message->getSubject())), ChatWindow::DefaultDirection);
+        if (!isInitialJoin_) {
+            displaySubjectIfChanged(message->getSubject());
+        }
+        isInitialJoin_ = false;
         chatWindow_->setSubject(message->getSubject());
         doneGettingHistory_ = true;
+        subject_ = message->getSubject();
     }
 
     if (!doneGettingHistory_ && !message->getPayload<Delay>()) {
@@ -576,23 +583,34 @@ void MUCController::preHandleIncomingMessage(std::shared_ptr<MessageEvent> messa
     }
 }
 
-void MUCController::addMessageHandleIncomingMessage(const JID& from, const ChatWindow::ChatMessage& message, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& time) {
+void MUCController::addMessageHandleIncomingMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& time) {
     if (from.isBare()) {
         chatWindow_->addSystemMessage(message, ChatWindow::DefaultDirection);
     }
     else {
-        ChatControllerBase::addMessageHandleIncomingMessage(from, message, senderIsSelf, label, time);
+        lastMessagesIDs_[from] = {messageID, addMessage(message, senderDisplayNameFromMessage(from), senderIsSelf, label, avatarManager_->getAvatarPath(from), time)};
+    }
+}
+
+void MUCController::handleIncomingReplaceMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, const std::string& /*idToReplace*/, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& timeStamp) {
+    auto lastMessage = lastMessagesIDs_.find(from);
+    if (lastMessage != lastMessagesIDs_.end()) {
+        replaceMessage(message, lastMessage->second.idInWindow, timeStamp);
+    }
+    else {
+        addMessageHandleIncomingMessage(from, message, messageID, senderIsSelf, label, timeStamp);
     }
 }
 
 void MUCController::postHandleIncomingMessage(std::shared_ptr<MessageEvent> messageEvent, const ChatWindow::ChatMessage& chatMessage) {
     std::shared_ptr<Message> message = messageEvent->getStanza();
     if (joined_ && messageEvent->getStanza()->getFrom().getResource() != nick_ && !message->getPayload<Delay>()) {
-        if (messageTargetsMe(message) || isImpromptu_) {
+        highlighter_->handleSystemNotifications(chatMessage, messageEvent);
+        if (!messageEvent->getNotifications().empty()) {
             eventController_->handleIncomingEvent(messageEvent);
         }
         if (!messageEvent->getConcluded()) {
-            handleHighlightActions(chatMessage);
+            highlighter_->handleSoundNotifications(chatMessage);
         }
     }
 }
@@ -649,13 +667,16 @@ void MUCController::setOnline(bool online) {
             std::shared_ptr<BlockList> blockList = clientBlockListManager_->getBlockList();
             if (blockList && blockList->isBlocked(muc_->getJID())) {
                 handleBlockingStateChanged();
-                lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(QT_TRANSLATE_NOOP("", "You've blocked this room. To enter the room, first unblock it using the cog menu and try again")), ChatWindow::DefaultDirection);
+                lastStartMessage_ = QT_TRANSLATE_NOOP("", "You've blocked this room. To enter the room, first unblock it using the cog menu and try again");
+                lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(lastStartMessage_ ), ChatWindow::DefaultDirection);
             }
             else {
                 if (isImpromptu_) {
-                    lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(QT_TRANSLATE_NOOP("", "Trying to join chat")), ChatWindow::DefaultDirection);
+                    lastStartMessage_ = QT_TRANSLATE_NOOP("", "Trying to join chat");
+                    lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(lastStartMessage_), ChatWindow::DefaultDirection);
                 } else {
-                    lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(str(format(QT_TRANSLATE_NOOP("", "Trying to enter room %1%")) % toJID_.toString())), ChatWindow::DefaultDirection);
+                    lastStartMessage_ = str(format(QT_TRANSLATE_NOOP("", "Trying to enter room %1%")) % toJID_.toString());
+                    lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(lastStartMessage_), ChatWindow::DefaultDirection);
                 }
                 if (loginCheckTimer_) {
                     loginCheckTimer_->start();
@@ -744,10 +765,6 @@ void MUCController::handleOccupantLeft(const MUCOccupant& occupant, MUC::Leaving
     if (clearAfter) {
         clearPresenceQueue();
     }
-
-    if (isImpromptu_) {
-        setImpromptuWindowTitle();
-    }
 }
 
 void MUCController::handleOccupantNicknameChanged(const std::string& oldNickname, const std::string& newNickname) {
@@ -765,6 +782,11 @@ void MUCController::handleOccupantNicknameChanged(const std::string& oldNickname
 
     // update contact
     roster_->removeContact(oldJID);
+    auto it = currentOccupants_.find(newNickname);
+    if (it != currentOccupants_.end()) {
+        roster_->removeContact(newJID);
+    }
+
     MUCOccupant occupant = muc_->getOccupant(newNickname);
 
     JID realJID;
@@ -780,9 +802,7 @@ void MUCController::handleOccupantNicknameChanged(const std::string& oldNickname
     std::string groupName(roleToGroupName(role));
     roster_->addContact(newJID, realJID, newNickname, groupName, avatarManager_->getAvatarPath(newJID));
     roster_->applyOnItems(SetMUC(newJID, role, affiliation));
-    if (avatarManager_ != nullptr) {
-        handleAvatarChanged(newJID);
-    }
+    handleAvatarChanged(newJID);
 
     clearPresenceQueue();
     onUserNicknameChanged(oldNickname, newNickname);
@@ -859,7 +879,7 @@ std::string MUCController::concatenateListOfNames(const std::vector<NickJoinPart
 std::string MUCController::generateJoinPartString(const std::vector<NickJoinPart>& joinParts, bool isImpromptu) {
     std::vector<NickJoinPart> sorted[4];
     std::string eventStrings[4];
-    foreach (NickJoinPart event, joinParts) {
+    for (const auto& event : joinParts) {
         sorted[event.type].push_back(event);
     }
     std::string result;
@@ -937,7 +957,7 @@ void MUCController::handleBookmarkRequest() {
 
     // Check for existing bookmark for this room and, if it exists, use it instead.
     std::vector<MUCBookmark> bookmarks = mucBookmarkManager_->getBookmarks();
-    foreach (const MUCBookmark& bookmark, bookmarks) {
+    for (const auto& bookmark : bookmarks) {
         if (bookmark.getRoom() == jid.toBare()) {
             roomBookmark = bookmark;
             break;
@@ -994,14 +1014,13 @@ void MUCController::handleDestroyRoomRequest() {
 
 void MUCController::handleInvitePersonToThisMUCRequest(const std::vector<JID>& jidsToInvite) {
     RequestInviteToMUCUIEvent::ImpromptuMode mode = isImpromptu_ ? RequestInviteToMUCUIEvent::Impromptu : RequestInviteToMUCUIEvent::NotImpromptu;
-    std::shared_ptr<UIEvent> event(new RequestInviteToMUCUIEvent(muc_->getJID(), jidsToInvite, mode));
-    eventStream_->send(event);
+    eventStream_->send(std::make_shared<RequestInviteToMUCUIEvent>(getToJID(), jidsToInvite, mode));
 }
 
 void MUCController::handleUIEvent(std::shared_ptr<UIEvent> event) {
     std::shared_ptr<InviteToMUCUIEvent> inviteEvent = std::dynamic_pointer_cast<InviteToMUCUIEvent>(event);
-    if (inviteEvent && inviteEvent->getRoom() == muc_->getJID()) {
-        foreach (const JID& jid, inviteEvent->getInvites()) {
+    if (inviteEvent && inviteEvent->getOriginator() == muc_->getJID()) {
+        for (const auto& jid : inviteEvent->getInvites()) {
             muc_->invitePerson(jid, inviteEvent->getReason(), isImpromptu_);
         }
     }
@@ -1014,16 +1033,14 @@ void MUCController::handleGetAffiliationsRequest() {
     muc_->requestAffiliationList(MUCOccupant::Outcast);
 }
 
-typedef std::pair<MUCOccupant::Affiliation, JID> AffiliationChangePair;
-
 void MUCController::handleChangeAffiliationsRequest(const std::vector<std::pair<MUCOccupant::Affiliation, JID> >& changes) {
     std::set<JID> addedJIDs;
-    foreach (const AffiliationChangePair& change, changes) {
+    for (const auto& change : changes) {
         if (change.first != MUCOccupant::NoAffiliation) {
             addedJIDs.insert(change.second);
         }
     }
-    foreach (const AffiliationChangePair& change, changes) {
+    for (const auto& change : changes) {
         if (change.first != MUCOccupant::NoAffiliation || addedJIDs.find(change.second) == addedJIDs.end()) {
             muc_->changeAffiliation(change.second, change.first);
         }
@@ -1063,6 +1080,10 @@ void MUCController::logMessage(const std::string& message, const JID& fromJID, c
     }
 }
 
+JID MUCController::messageCorrectionJID(const JID& fromJID) {
+    return fromJID;
+}
+
 void MUCController::addRecentLogs() {
     if (!historyController_) {
         return;
@@ -1070,7 +1091,7 @@ void MUCController::addRecentLogs() {
 
     joinContext_ = historyController_->getMUCContext(selfJID_, toJID_, lastActivity_);
 
-    foreach (const HistoryMessage& message, joinContext_) {
+    for (const auto& message : joinContext_) {
         bool senderIsSelf = nick_ == message.getFromJID().getResource();
 
         // the chatWindow uses utc timestamps
@@ -1083,7 +1104,7 @@ void MUCController::checkDuplicates(std::shared_ptr<Message> newMessage) {
     JID jid = newMessage->getFrom();
     boost::optional<boost::posix_time::ptime> time = newMessage->getTimestamp();
 
-    reverse_foreach (const HistoryMessage& message, joinContext_) {
+    for (const auto& message : boost::adaptors::reverse(joinContext_)) {
         boost::posix_time::ptime messageTime = message.getTime() - boost::posix_time::hours(message.getOffset());
         if (time && time < messageTime) {
             break;
@@ -1105,14 +1126,14 @@ void MUCController::checkDuplicates(std::shared_ptr<Message> newMessage) {
 
 void MUCController::setNick(const std::string& nick) {
     nick_ = nick;
-    highlighter_->setNick(nick_);
+    chatMessageParser_->setNick(nick);
 }
 
 Form::ref MUCController::buildImpromptuRoomConfiguration(Form::ref roomConfigurationForm) {
     Form::ref result = std::make_shared<Form>(Form::SubmitType);
     std::string impromptuConfigs[] = { "muc#roomconfig_enablelogging", "muc#roomconfig_persistentroom", "muc#roomconfig_publicroom", "muc#roomconfig_whois"};
     std::set<std::string> impromptuConfigsMissing(impromptuConfigs, impromptuConfigs + 4);
-    foreach (std::shared_ptr<FormField> field, roomConfigurationForm->getFields()) {
+    for (const auto& field : roomConfigurationForm->getFields()) {
         std::shared_ptr<FormField> resultField;
         if (field->getName() == "muc#roomconfig_enablelogging") {
             resultField = std::make_shared<FormField>(FormField::BooleanType, "0");
@@ -1138,7 +1159,7 @@ Form::ref MUCController::buildImpromptuRoomConfiguration(Form::ref roomConfigura
         }
     }
 
-    foreach (const std::string& config, impromptuConfigsMissing) {
+    for (const auto& config : impromptuConfigsMissing) {
         if (config == "muc#roomconfig_publicroom") {
             chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(QT_TRANSLATE_NOOP("", "This server doesn't support hiding your chat from other users.")), ChatWindow::DefaultDirection);
         } else if (config == "muc#roomconfig_whois") {
@@ -1147,22 +1168,6 @@ Form::ref MUCController::buildImpromptuRoomConfiguration(Form::ref roomConfigura
     }
 
     return result;
-}
-
-void MUCController::setImpromptuWindowTitle() {
-    std::string title;
-    typedef std::pair<std::string, MUCOccupant> StringMUCOccupantPair;
-    std::map<std::string, MUCOccupant> occupants = muc_->getOccupants();
-    if (occupants.size() <= 1) {
-        title = QT_TRANSLATE_NOOP("", "Empty Chat");
-    } else {
-        foreach (StringMUCOccupantPair pair, occupants) {
-            if (pair.first != nick_) {
-                title += (title.empty() ? "" : ", ") + pair.first;
-            }
-        }
-    }
-    chatWindow_->setName(title);
 }
 
 void MUCController::handleRoomUnlocked() {
@@ -1215,6 +1220,27 @@ void MUCController::updateChatWindowBookmarkStatus(const boost::optional<MUCBook
     else {
         chatWindow_->setBookmarkState(ChatWindow::RoomNotBookmarked);
     }
+}
+
+void MUCController::displaySubjectIfChanged(const std::string& subject) {
+    if (subject_ != subject) {
+        if (!subject.empty()) {
+            chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(str(format(QT_TRANSLATE_NOOP("", "The room subject is now: %1%")) % subject)), ChatWindow::DefaultDirection);
+        }
+        else {
+            chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(str(format(QT_TRANSLATE_NOOP("", "The room subject has been removed")))), ChatWindow::DefaultDirection);
+        }
+        subject_ = subject;
+    }
+}
+
+void MUCController::addChatSystemMessage() {
+    lastJoinMessageUID_ = chatWindow_->addSystemMessage(chatMessageParser_->parseMessageBody(lastStartMessage_), ChatWindow::DefaultDirection);
+}
+
+void MUCController::setChatWindowTitle(const std::string& title) {
+    chatWindowTitle_ = title;
+    chatWindow_->setName(chatWindowTitle_);
 }
 
 }

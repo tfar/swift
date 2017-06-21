@@ -8,6 +8,8 @@
 
 #include <QTabBar>
 
+#include <Swift/QtUI/QtTabWidget.h>
+
 namespace Swift {
 
 class QtDNDTabBar : public QTabBar {
@@ -22,6 +24,7 @@ class QtDNDTabBar : public QTabBar {
 
         virtual QSize sizeHint() const;
 
+        friend class QtTabWidget;
     signals:
         void onDropSucceeded();
 
@@ -33,9 +36,9 @@ class QtDNDTabBar : public QTabBar {
 
     private:
         int defaultTabHeight;
-        int dragIndex;
+        int dragIndex = -1;
         QString dragText;
-        QWidget* dragWidget;
+        QWidget* dragWidget = nullptr;
 };
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -15,7 +15,6 @@
 #include <Swiften/Base/Algorithm.h>
 #include <Swiften/Base/Log.h>
 #include <Swiften/Base/String.h>
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Base/format.h>
 #include <Swiften/Client/Client.h>
 #include <Swiften/Client/ClientBlockListManager.h>
@@ -58,8 +57,8 @@
 #include <Swift/Controllers/EventWindowController.h>
 #include <Swift/Controllers/FileTransfer/FileTransferOverview.h>
 #include <Swift/Controllers/FileTransferListController.h>
-#include <Swift/Controllers/HighlightEditorController.h>
-#include <Swift/Controllers/HighlightManager.h>
+#include <Swift/Controllers/Highlighting/HighlightEditorController.h>
+#include <Swift/Controllers/Highlighting/HighlightManager.h>
 #include <Swift/Controllers/HistoryController.h>
 #include <Swift/Controllers/HistoryViewController.h>
 #include <Swift/Controllers/Intl.h>
@@ -180,7 +179,7 @@ MainController::MainController(
     ClientOptions cachedOptions;
     bool eagle = settings_->getSetting(SettingConstants::FORGET_PASSWORDS);
     if (!eagle) {
-        foreach (std::string profile, settings->getAvailableProfiles()) {
+        for (auto&& profile : settings->getAvailableProfiles()) {
             ProfileSettingsProvider profileSettings(profile, settings);
             std::string password = profileSettings.getStringSetting("pass");
             std::string certificate = profileSettings.getStringSetting("certificate");
@@ -349,7 +348,7 @@ void MainController::handleConnected() {
         showProfileController_ = new ShowProfileController(client_->getVCardManager(), uiFactory_, uiEventStream_);
         ftOverview_ = new FileTransferOverview(client_->getFileTransferManager());
         fileTransferListController_->setFileTransferOverview(ftOverview_);
-        rosterController_ = new RosterController(boundJID_, client_->getRoster(), client_->getAvatarManager(), uiFactory_, client_->getNickManager(), client_->getNickResolver(), client_->getPresenceOracle(), client_->getSubscriptionManager(), eventController_, uiEventStream_, client_->getIQRouter(), settings_, client_->getEntityCapsProvider(), ftOverview_, client_->getClientBlockListManager(), client_->getVCardManager());
+        rosterController_ = new RosterController(boundJID_, client_->getRoster(), client_->getAvatarManager(), uiFactory_, client_->getNickManager(), client_->getNickResolver(), client_->getPresenceOracle(), client_->getSubscriptionManager(), eventController_, uiEventStream_, client_->getIQRouter(), settings_, client_->getEntityCapsProvider(), client_->getClientBlockListManager(), client_->getVCardManager());
         rosterController_->onChangeStatusRequest.connect(boost::bind(&MainController::handleChangeStatusRequest, this, _1, _2));
         rosterController_->onSignOutRequest.connect(boost::bind(&MainController::signOut, this));
         rosterController_->getWindow()->onShowCertificateRequest.connect(boost::bind(&MainController::handleShowCertificateRequest, this));
@@ -367,7 +366,7 @@ void MainController::handleConnected() {
         contactSuggesterWithoutRoster_ = new ContactSuggester();
         contactSuggesterWithRoster_ = new ContactSuggester();
 
-        userSearchControllerInvite_ = new UserSearchController(UserSearchController::InviteToChat, jid_, uiEventStream_, client_->getVCardManager(), uiFactory_, client_->getIQRouter(), rosterController_, contactSuggesterWithRoster_, client_->getAvatarManager(), client_->getPresenceOracle(), profileSettings_);
+        userSearchControllerInvite_ = new UserSearchController(UserSearchController::Type::InviteToChat, jid_, uiEventStream_, client_->getVCardManager(), uiFactory_, client_->getIQRouter(), rosterController_, contactSuggesterWithRoster_, client_->getAvatarManager(), client_->getPresenceOracle(), profileSettings_);
 #ifdef SWIFT_EXPERIMENTAL_HISTORY
         historyController_ = new HistoryController(storages_->getHistoryStorage());
         historyViewController_ = new HistoryViewController(jid_, uiEventStream_, historyController_, client_->getNickResolver(), client_->getAvatarManager(), client_->getPresenceOracle(), uiFactory_);
@@ -406,8 +405,8 @@ void MainController::handleConnected() {
         client_->getDiscoManager()->setCapsNode(CLIENT_NODE);
         client_->getDiscoManager()->setDiscoInfo(discoInfo);
 
-        userSearchControllerChat_ = new UserSearchController(UserSearchController::StartChat, jid_, uiEventStream_, client_->getVCardManager(), uiFactory_, client_->getIQRouter(), rosterController_, contactSuggesterWithRoster_, client_->getAvatarManager(), client_->getPresenceOracle(), profileSettings_);
-        userSearchControllerAdd_ = new UserSearchController(UserSearchController::AddContact, jid_, uiEventStream_, client_->getVCardManager(), uiFactory_, client_->getIQRouter(), rosterController_, contactSuggesterWithoutRoster_, client_->getAvatarManager(), client_->getPresenceOracle(), profileSettings_);
+        userSearchControllerChat_ = new UserSearchController(UserSearchController::Type::StartChat, jid_, uiEventStream_, client_->getVCardManager(), uiFactory_, client_->getIQRouter(), rosterController_, contactSuggesterWithRoster_, client_->getAvatarManager(), client_->getPresenceOracle(), profileSettings_);
+        userSearchControllerAdd_ = new UserSearchController(UserSearchController::Type::AddContact, jid_, uiEventStream_, client_->getVCardManager(), uiFactory_, client_->getIQRouter(), rosterController_, contactSuggesterWithoutRoster_, client_->getAvatarManager(), client_->getPresenceOracle(), profileSettings_);
         adHocManager_ = new AdHocManager(JID(boundJID_.getDomain()), uiFactory_, client_->getIQRouter(), uiEventStream_, rosterController_->getWindow());
 
         chatsManager_->onImpromptuMUCServiceDiscovered.connect(boost::bind(&UserSearchController::setCanInitiateImpromptuMUC, userSearchControllerChat_, _1));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -23,31 +23,37 @@
 #include <Swiften/Elements/Stanza.h>
 #include <Swiften/JID/JID.h>
 #include <Swiften/MUC/MUCRegistry.h>
-#include <Swiften/Network/Timer.h>
-#include <Swiften/Network/TimerFactory.h>
 #include <Swiften/Presence/PresenceOracle.h>
 #include <Swiften/Queries/IQRouter.h>
 
-#include <Swift/Controllers/HighlightManager.h>
+#include <Swift/Controllers/Highlighting/HighlightManager.h>
 #include <Swift/Controllers/HistoryController.h>
 #include <Swift/Controllers/UIInterfaces/ChatWindow.h>
 #include <Swift/Controllers/XMPPEvents/MUCInviteEvent.h>
 #include <Swift/Controllers/XMPPEvents/MessageEvent.h>
 
 namespace Swift {
-    class IQRouter;
-    class StanzaChannel;
-    class ChatWindowFactory;
+    class AutoAcceptMUCInviteDecider;
     class AvatarManager;
-    class UIEventStream;
-    class EventController;
+    class ChatMessageParser;
+    class ChatWindowFactory;
     class EntityCapsProvider;
+    class EventController;
     class HighlightManager;
     class Highlighter;
-    class ChatMessageParser;
-    class AutoAcceptMUCInviteDecider;
+    class IQRouter;
+    class NickResolver;
+    class StanzaChannel;
+    class UIEventStream;
 
     class ChatControllerBase : public boost::signals2::trackable {
+        public:
+            class StreamWindowMessageIDPair {
+                public:
+                    std::string idInStream;
+                    std::string idInWindow;
+            };
+
         public:
             virtual ~ChatControllerBase();
             void showChatWindow();
@@ -73,7 +79,7 @@ namespace Swift {
             boost::signals2::signal<void(ChatWindow* /*window to reuse*/, const std::vector<JID>& /*invite people*/, const std::string& /*reason*/)> onConvertToMUC;
 
         protected:
-            ChatControllerBase(const JID& self, StanzaChannel* stanzaChannel, IQRouter* iqRouter, ChatWindowFactory* chatWindowFactory, const JID &toJID, PresenceOracle* presenceOracle, AvatarManager* avatarManager, bool useDelayForLatency, UIEventStream* eventStream, EventController* eventController, TimerFactory* timerFactory, EntityCapsProvider* entityCapsProvider, HistoryController* historyController, MUCRegistry* mucRegistry, HighlightManager* highlightManager, std::shared_ptr<ChatMessageParser> chatMessageParser, AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider);
+            ChatControllerBase(const JID& self, StanzaChannel* stanzaChannel, IQRouter* iqRouter, ChatWindowFactory* chatWindowFactory, const JID &toJID, NickResolver* nickResolver, PresenceOracle* presenceOracle, AvatarManager* avatarManager, bool useDelayForLatency, UIEventStream* eventStream, EventController* eventController, EntityCapsProvider* entityCapsProvider, HistoryController* historyController, MUCRegistry* mucRegistry, HighlightManager* highlightManager, std::shared_ptr<ChatMessageParser> chatMessageParser, AutoAcceptMUCInviteDecider* autoAcceptMUCInviteDecider);
 
             /**
              * Pass the Message appended, and the stanza used to send it.
@@ -83,7 +89,8 @@ namespace Swift {
             virtual std::string senderHighlightNameFromMessage(const JID& from) = 0;
             virtual bool isIncomingMessageFromMe(std::shared_ptr<Message>) = 0;
             virtual void preHandleIncomingMessage(std::shared_ptr<MessageEvent>) {}
-            virtual void addMessageHandleIncomingMessage(const JID& from, const ChatWindow::ChatMessage& message, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& time);
+            virtual void addMessageHandleIncomingMessage(const JID& from, const ChatWindow::ChatMessage& message, const std::string& messageID, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& time) = 0;
+            virtual void handleIncomingReplaceMessage(const JID& from, const ChatWindow::ChatMessage& chatMessage, const std::string& messageID, const std::string& idToReplace, bool senderIsSelf, std::shared_ptr<SecurityLabel> label, const boost::posix_time::ptime& timeStamp) = 0;
             virtual void postHandleIncomingMessage(std::shared_ptr<MessageEvent>, const ChatWindow::ChatMessage&) {}
             virtual void preSendMessageRequest(std::shared_ptr<Message>) {}
             virtual bool isFromContact(const JID& from);
@@ -96,23 +103,28 @@ namespace Swift {
             /** JID any iq for account should go to - bare except for PMs */
             virtual JID getBaseJID();
             virtual void logMessage(const std::string& message, const JID& fromJID, const JID& toJID, const boost::posix_time::ptime& timeStamp, bool isIncoming) = 0;
-            ChatWindow::ChatMessage buildChatWindowChatMessage(const std::string& message, bool senderIsSelf, const HighlightAction& fullMessageHighlightAction);
-            void handleHighlightActions(const ChatWindow::ChatMessage& chatMessage);
+            ChatWindow::ChatMessage buildChatWindowChatMessage(const std::string& message, const std::string& senderName, bool senderIsSelf);
             void updateMessageCount();
+            virtual bool shouldIgnoreMessage(std::shared_ptr<Message> /* message */) {
+                return false;
+            }
+
+            /**
+             * What JID should be used for last message correction (XEP-0308) tracking.
+             */
+            virtual JID messageCorrectionJID(const JID& fromJID) = 0;
 
         private:
             IDGenerator idGenerator_;
             std::string lastSentMessageStanzaID_;
-            void createDayChangeTimer();
 
             void handleSendMessageRequest(const std::string &body, bool isCorrectionMessage);
             void handleAllMessagesRead();
             void handleSecurityLabelsCatalogResponse(std::shared_ptr<SecurityLabelsCatalog>, ErrorPayload::ref error);
-            void handleDayChangeTick();
             void handleMUCInvitation(Message::ref message);
             void handleMediatedMUCInvitation(Message::ref message);
             void handleGeneralMUCInvitation(MUCInviteEvent::ref event);
-            void handleLogCleared();
+            void handleContinuationsBroken();
 
         protected:
             JID selfJID_;
@@ -124,13 +136,11 @@ namespace Swift {
             ChatWindow* chatWindow_;
             JID toJID_;
             bool labelsEnabled_;
-            std::map<JID, std::string> lastMessagesUIID_;
+            std::map<JID, StreamWindowMessageIDPair> lastMessagesIDs_;
             PresenceOracle* presenceOracle_;
             AvatarManager* avatarManager_;
             bool useDelayForLatency_;
             EventController* eventController_;
-            std::shared_ptr<Timer> dateChangeTimer_;
-            TimerFactory* timerFactory_;
             EntityCapsProvider* entityCapsProvider_;
             SecurityLabelsCatalog::Item lastLabel_;
             HistoryController* historyController_;

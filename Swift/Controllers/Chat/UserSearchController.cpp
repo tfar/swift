@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2016 Isode Limited.
+ * Copyright (c) 2010-2017 Isode Limited.
  * All rights reserved.
  * See the COPYING file for more information.
  */
@@ -12,7 +12,6 @@
 
 #include <Swiften/Avatars/AvatarManager.h>
 #include <Swiften/Base/String.h>
-#include <Swiften/Base/foreach.h>
 #include <Swiften/Disco/DiscoServiceWalker.h>
 #include <Swiften/Disco/GetDiscoInfoRequest.h>
 #include <Swiften/Disco/GetDiscoItemsRequest.h>
@@ -82,19 +81,19 @@ void UserSearchController::setCanInitiateImpromptuMUC(bool supportsImpromptu) {
 void UserSearchController::handleUIEvent(std::shared_ptr<UIEvent> event) {
     bool handle = false;
     std::shared_ptr<RequestAddUserDialogUIEvent> addUserRequest = std::shared_ptr<RequestAddUserDialogUIEvent>();
-    RequestInviteToMUCUIEvent::ref inviteToMUCRequest = RequestInviteToMUCUIEvent::ref();
+    auto inviteToMUCRequest = RequestInviteToMUCUIEvent::ref();
     switch (type_) {
-        case AddContact:
+        case Type::AddContact:
             if ((addUserRequest = std::dynamic_pointer_cast<RequestAddUserDialogUIEvent>(event))) {
                 handle = true;
             }
             break;
-        case StartChat:
+        case Type::StartChat:
             if (std::dynamic_pointer_cast<RequestChatWithUserDialogUIEvent>(event)) {
                 handle = true;
             }
             break;
-        case InviteToChat:
+        case Type::InviteToChat:
             if ((inviteToMUCRequest = std::dynamic_pointer_cast<RequestInviteToMUCUIEvent>(event))) {
                 handle = true;
             }
@@ -110,10 +109,11 @@ void UserSearchController::handleUIEvent(std::shared_ptr<UIEvent> event) {
             if (!name.empty() && jid.isValid()) {
                 window_->prepopulateJIDAndName(jid, name);
             }
-        } else if (inviteToMUCRequest) {
+        }
+        else if (inviteToMUCRequest) {
             window_->setCanSupplyDescription(!inviteToMUCRequest->isImpromptu());
             window_->setJIDs(inviteToMUCRequest->getInvites());
-            window_->setRoomJID(inviteToMUCRequest->getRoom());
+            window_->setOriginator(inviteToMUCRequest->getOriginator());
         }
         return;
     }
@@ -143,7 +143,8 @@ void UserSearchController::endDiscoWalker() {
 void UserSearchController::handleDiscoServiceFound(const JID& jid, std::shared_ptr<DiscoInfo> info) {
     //bool isUserDirectory = false;
     bool supports55 = false;
-    foreach (DiscoInfo::Identity identity, info->getIdentities()) {
+    // TODO: Cleanup code
+    for (const auto& identity : info->getIdentities()) {
         if ((identity.getCategory() == "directory"
             && identity.getType() == "user")) {
             //isUserDirectory = true;
@@ -186,7 +187,7 @@ void UserSearchController::handleSearchResponse(std::shared_ptr<SearchPayload> r
     if (resultsPayload->getForm()) {
         window_->setResultsForm(resultsPayload->getForm());
     } else {
-        foreach (SearchPayload::Item item, resultsPayload->getItems()) {
+        for (auto&& item : resultsPayload->getItems()) {
             JID jid(item.jid);
             std::map<std::string, std::string> fields;
             fields["first"] = item.first;
@@ -232,7 +233,7 @@ void UserSearchController::handleContactSuggestionsRequested(std::string text) {
     std::vector<Contact::ref>::iterator i = suggestions.begin();
     while (i != suggestions.end()) {
         bool found = false;
-        foreach (const JID& jid, existingJIDs) {
+        for (const auto& jid : existingJIDs) {
             if ((*i)->jid == jid) {
                 found = true;
                 break;
@@ -240,7 +241,7 @@ void UserSearchController::handleContactSuggestionsRequested(std::string text) {
         }
 
         // remove contact suggestions which are already on the contact list in add-contact-mode
-        if (type_ == AddContact) {
+        if (type_ == Type::AddContact) {
             if (!found && !!rosterController_->getItem((*i)->jid)) {
                 found = true;
             }
@@ -274,7 +275,7 @@ void UserSearchController::handlePresenceChanged(Presence::ref presence) {
 void UserSearchController::handleJIDUpdateRequested(const std::vector<JID>& jids) {
     if (window_) {
         std::vector<Contact::ref> updates;
-        foreach(const JID& jid, jids) {
+        for (const auto& jid : jids) {
             updates.push_back(convertJIDtoContact(jid));
         }
         window_->updateContacts(updates);
@@ -283,7 +284,7 @@ void UserSearchController::handleJIDUpdateRequested(const std::vector<JID>& jids
 
 void UserSearchController::handleJIDAddRequested(const std::vector<JID>& jids) {
     std::vector<Contact::ref> contacts;
-    foreach(const JID& jid, jids) {
+    for (const auto& jid : jids) {
         contacts.push_back(convertJIDtoContact(jid));
     }
     window_->addContacts(contacts);
@@ -326,16 +327,16 @@ void UserSearchController::handleDiscoWalkFinished() {
 
 void UserSearchController::initializeUserWindow() {
     if (!window_) {
-        UserSearchWindow::Type windowType = UserSearchWindow::AddContact;
+        auto windowType = UserSearchWindow::Type::AddContact;
         switch(type_) {
-            case AddContact:
-                windowType = UserSearchWindow::AddContact;
+            case Type::AddContact:
+                windowType = UserSearchWindow::Type::AddContact;
                 break;
-            case StartChat:
-                windowType = UserSearchWindow::ChatToContact;
+            case Type::StartChat:
+                windowType = UserSearchWindow::Type::ChatToContact;
                 break;
-            case InviteToChat:
-                windowType = UserSearchWindow::InviteToChat;
+            case Type::InviteToChat:
+                windowType = UserSearchWindow::Type::InviteToChat;
                 break;
         }
 
@@ -358,7 +359,7 @@ void UserSearchController::initializeUserWindow() {
 
 void UserSearchController::loadSavedDirectories() {
     savedDirectories_.clear();
-    foreach (std::string stringItem, String::split(settings_->getStringSetting(SEARCHED_DIRECTORIES), '\n')) {
+    for (auto&& stringItem : String::split(settings_->getStringSetting(SEARCHED_DIRECTORIES), '\n')) {
         if(!stringItem.empty()) {
             savedDirectories_.push_back(JID(stringItem));
         }
@@ -375,7 +376,7 @@ void UserSearchController::addToSavedDirectories(const JID& jid) {
 
     std::string collapsed;
     int i = 0;
-    foreach (JID jidItem, savedDirectories_) {
+    for (const auto& jidItem : savedDirectories_) {
         if (i >= 15) {
             break;
         }
