@@ -71,5 +71,5 @@ workflows:
   build:
     jobs:
       - build-clang
-      - build-gcc
-      - build-coala
+#      - build-gcc
+#      - build-coala
